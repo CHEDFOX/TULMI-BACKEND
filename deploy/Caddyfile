@@ -1,0 +1,14 @@
+# Automatic HTTPS for the Flow backend.
+#
+# 1. Point a domain (or subdomain) at your VPS:
+#       create a DNS "A record"  ->  flow.yourdomain.com  ->  YOUR_VPS_IP
+# 2. Replace flow.example.com below with that domain.
+# 3. Deploy with:  docker compose --profile https up -d --build
+#
+# Caddy fetches and renews a free Let's Encrypt certificate automatically and
+# transparently proxies both HTTPS and the WebSocket (wss://) traffic to the
+# backend container.
+
+flow.example.com {
+    reverse_proxy backend:8080
+}

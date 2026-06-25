@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.env
+.env.*
+*.env
+!.env.example
+test-assets/*
+!test-assets/README.md
