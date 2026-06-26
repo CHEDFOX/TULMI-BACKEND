@@ -195,18 +195,12 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
       children: [
         { type: "Overline", props: { content: "Playground" } },
         { type: "Heading", props: { content: "Make it sound like you" } },
-        { type: "Paragraph", props: { content: "Type something rough, then ✨ Refine — or just speak it." }, style: { marginBottom: 22 } },
+        { type: "Paragraph", props: { content: "Just speak — your words appear and polish themselves." }, style: { marginBottom: 22 } },
         { type: "Text", props: { content: "Your text", variant: "label" } },
         {
           type: "TextField",
           bind: { value: "input" },
           props: { placeholder: "Type here…", multiline: true },
-        },
-        spacer(10),
-        {
-          type: "Button",
-          props: { label: "✨ Refine", variant: "primary" },
-          on: { onPress: "refine" },
         },
         spacer(10),
         text("Or speak — it fills the box above:", "label"),
@@ -753,7 +747,7 @@ export function buildKeyboardConfig(): KeyboardConfigResponse {
           ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
           ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
           ["{shift}", "z", "x", "c", "v", "b", "n", "m", "{backspace}"],
-          ["{globe}", "{mic}", "{refine}", "{space}", "{return}"],
+          ["{globe}", "{mic}", "{space}", "{return}"],
         ],
       },
     ],
