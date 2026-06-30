@@ -15,6 +15,7 @@
  */
 import Fastify from "fastify";
 import multipart from "@fastify/multipart";
+import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import transcribeStream from "./routes/transcribe-stream.js";
 import { getConfig, VERSION } from "./config.js";
@@ -59,6 +60,22 @@ await app.register(multipart, {
   limits: { fileSize: 50 * 1024 * 1024, files: 1 },
 });
 await app.register(websocket);
+
+// Rate-limit /v1/* routes. The keyGenerator falls back to IP for anonymous
+// callers (SDUI bootstrap/screen) and uses the bearer token for authed callers
+// so one user can't blow another's budget. Health/readiness are excluded so
+// load-balancer probes are never throttled.
+await app.register(rateLimit, {
+  global: false,
+  max: cfg.RATE_LIMIT_MAX,
+  timeWindow: cfg.RATE_LIMIT_WINDOW_MS,
+  keyGenerator: (req) => {
+    const auth = req.headers["authorization"];
+    if (typeof auth === "string" && auth.length > 7) return auth;
+    return req.ip;
+  },
+});
+
 await app.register(transcribeStream);
 
 function countWords(text: string): number {
@@ -68,8 +85,54 @@ function countWords(text: string): number {
 
 // --- Health -----------------------------------------------------------------
 
+// /healthz — liveness only. Cheap, no upstream calls. Used by Docker HEALTHCHECK.
 app.get("/healthz", async (): Promise<HealthResponse> => {
   return { status: "ok", service: "tulmi-backend", version: VERSION };
+});
+
+// /readyz — readiness. Pings the upstreams the pipeline depends on so an
+// orchestrator (or operator) can tell "process alive" from "actually serving".
+// Cached for 5 s so a flood of probes can't push us into upstream rate limits.
+type Readiness = { name: string; ok: boolean; detail?: string };
+let readyCache: { at: number; status: number; body: unknown } | null = null;
+const READY_CACHE_MS = 5_000;
+
+async function pingHead(url: string, timeoutMs = 1500): Promise<Readiness> {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { method: "HEAD", signal: ctl.signal });
+    // 2xx-4xx all mean the host is reachable; 5xx means upstream is sick.
+    return { name: url, ok: res.status < 500, detail: `HTTP ${res.status}` };
+  } catch (err) {
+    return { name: url, ok: false, detail: (err as Error).message };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+app.get("/readyz", async (_req, reply) => {
+  const now = Date.now();
+  if (readyCache && now - readyCache.at < READY_CACHE_MS) {
+    return reply.code(readyCache.status).send(readyCache.body);
+  }
+  const checks: Readiness[] = [];
+  checks.push(await pingHead("https://openrouter.ai/api/v1/models"));
+  if (cfg.SUPABASE_URL) {
+    checks.push(await pingHead(`${cfg.SUPABASE_URL}/auth/v1/health`));
+  } else {
+    checks.push({ name: "supabase", ok: cfg.DEV_SKIP_AUTH, detail: "not configured (DEV_SKIP_AUTH)" });
+  }
+  const allOk = checks.every((c) => c.ok);
+  const status = allOk ? 200 : 503;
+  const body = {
+    status: allOk ? "ready" : "degraded",
+    service: "tulmi-backend",
+    version: VERSION,
+    checks,
+  };
+  readyCache = { at: now, status, body };
+  return reply.code(status).send(body);
 });
 
 // --- Voice (REST): one-shot transcribe + clean ------------------------------
@@ -88,7 +151,17 @@ function formatFromFilename(name: string | undefined): AudioFormat | null {
   return ext && ALLOWED_FORMATS.includes(ext) ? ext : null;
 }
 
-app.post("/v1/transcribe-clean", async (req, reply) => {
+const AUTHED_RL = {
+  rateLimit: { max: cfg.RATE_LIMIT_MAX, timeWindow: cfg.RATE_LIMIT_WINDOW_MS },
+};
+const UNAUTH_RL = {
+  rateLimit: {
+    max: cfg.RATE_LIMIT_UNAUTH_MAX,
+    timeWindow: cfg.RATE_LIMIT_WINDOW_MS,
+  },
+};
+
+app.post("/v1/transcribe-clean", { config: AUTHED_RL }, async (req, reply) => {
   const user = await resolveUser(req.headers["authorization"]);
   if (!user) {
     return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
@@ -135,7 +208,7 @@ app.post("/v1/transcribe-clean", async (req, reply) => {
 
 // --- Typing (REST): refine typed text ---------------------------------------
 
-app.post("/v1/refine", async (req, reply) => {
+app.post("/v1/refine", { config: AUTHED_RL }, async (req, reply) => {
   const user = await resolveUser(req.headers["authorization"]);
   if (!user) {
     return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
@@ -169,7 +242,7 @@ app.post("/v1/refine", async (req, reply) => {
 
 // --- Screen (REST): draft a personalized reply ------------------------------
 
-app.post("/v1/draft", async (req, reply) => {
+app.post("/v1/draft", { config: AUTHED_RL }, async (req, reply) => {
   const user = await resolveUser(req.headers["authorization"]);
   if (!user) {
     return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
@@ -204,7 +277,7 @@ app.post("/v1/draft", async (req, reply) => {
 
 // --- Text-to-speech (REST): text → spoken audio -----------------------------
 
-app.post("/v1/speak", async (req, reply) => {
+app.post("/v1/speak", { config: AUTHED_RL }, async (req, reply) => {
   const user = await resolveUser(req.headers["authorization"]);
   if (!user) {
     return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
@@ -238,7 +311,7 @@ app.post("/v1/speak", async (req, reply) => {
 
 // --- Personality (REST): read / save the user's style profile ---------------
 
-app.get("/v1/personality", async (req, reply) => {
+app.get("/v1/personality", { config: AUTHED_RL }, async (req, reply) => {
   const user = await resolveUser(req.headers["authorization"]);
   if (!user) {
     return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
@@ -248,7 +321,7 @@ app.get("/v1/personality", async (req, reply) => {
   return reply.send(res);
 });
 
-app.put("/v1/personality", async (req, reply) => {
+app.put("/v1/personality", { config: AUTHED_RL }, async (req, reply) => {
   const user = await resolveUser(req.headers["authorization"]);
   if (!user) {
     return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
@@ -266,7 +339,7 @@ app.put("/v1/personality", async (req, reply) => {
 
 // Learn a style profile from a sample of the user's own writing, merge it into
 // their saved personality, and return the result.
-app.post("/v1/personality/learn", async (req, reply) => {
+app.post("/v1/personality/learn", { config: AUTHED_RL }, async (req, reply) => {
   const user = await resolveUser(req.headers["authorization"]);
   if (!user) {
     return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
@@ -292,7 +365,7 @@ app.post("/v1/personality/learn", async (req, reply) => {
 // The app is a generic renderer; these endpoints decide what it draws. Auth is
 // optional here so the shell can boot pre-login (personality is empty for guests).
 
-app.post("/v1/app/bootstrap", async (req, reply) => {
+app.post("/v1/app/bootstrap", { config: UNAUTH_RL }, async (req, reply) => {
   // Auth is optional here so the shell can boot; when present, the user's
   // profile decides whether onboarding still needs to run.
   const user = await resolveUser(req.headers["authorization"]);
@@ -301,7 +374,7 @@ app.post("/v1/app/bootstrap", async (req, reply) => {
   return reply.send(await localize(bootstrap, profile?.language ?? "en"));
 });
 
-app.post("/v1/app/screen", async (req, reply) => {
+app.post("/v1/app/screen", { config: UNAUTH_RL }, async (req, reply) => {
   const body = (req.body ?? {}) as { screenId?: string };
   const screenId = body.screenId;
   if (!screenId) {
@@ -328,7 +401,7 @@ app.post("/v1/app/screen", async (req, reply) => {
 
 // --- Profile (REST): language + onboarding state ----------------------------
 
-app.get("/v1/profile", async (req, reply) => {
+app.get("/v1/profile", { config: AUTHED_RL }, async (req, reply) => {
   const user = await resolveUser(req.headers["authorization"]);
   if (!user) {
     return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
@@ -336,7 +409,7 @@ app.get("/v1/profile", async (req, reply) => {
   return reply.send(await getProfile(user));
 });
 
-app.put("/v1/profile", async (req, reply) => {
+app.put("/v1/profile", { config: AUTHED_RL }, async (req, reply) => {
   const user = await resolveUser(req.headers["authorization"]);
   if (!user) {
     return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
@@ -355,7 +428,7 @@ app.put("/v1/profile", async (req, reply) => {
 
 // --- Keyboard config (server-driven keyboard; cached by the native shell) ----
 
-app.get("/v1/keyboard/config", async (_req, reply) => {
+app.get("/v1/keyboard/config", { config: UNAUTH_RL }, async (_req, reply) => {
   return reply.send(buildKeyboardConfig());
 });
 

@@ -1,4 +1,4 @@
-# Flow — one-command deploy. SAFE FOR A SHARED VPS:
+# Tulmi — one-command deploy. SAFE FOR A SHARED VPS:
 # by default it binds to localhost only on an uncommon port and does NOT touch
 # ports 80/443, so it cannot collide with your other apps.
 #
@@ -6,13 +6,14 @@
 #   Quick public test:        FLOW_BIND=0.0.0.0 docker compose up -d --build
 #                             (reach it at http://YOUR_VPS_IP:8770)
 #   Own HTTPS proxy (only if 80/443 are FREE):
-#                             docker compose --profile https up -d --build
+#                             FLOW_DOMAIN=flow.example.com docker compose --profile https up -d --build
 #
-# Tunables (set in your shell or in backend/.env):
-#   FLOW_BIND  - host interface to bind (default 127.0.0.1 = localhost only)
-#   FLOW_PORT  - host port (default 8770; change if 8770 is taken)
+# Tunables (set in your shell or in tulmi/.env):
+#   FLOW_BIND    - host interface to bind (default 127.0.0.1 = localhost only)
+#   FLOW_PORT    - host port (default 8770; change if 8770 is taken)
+#   FLOW_DOMAIN  - public domain for the bundled Caddy (only needed for --profile https)
 #
-# Keys come from backend/.env (never commit it). See .env.example.
+# Keys come from tulmi/.env (never commit it). See ../.env.example (canonical).
 
 services:
   backend:
@@ -24,11 +25,20 @@ services:
     environment:
       HOST: 0.0.0.0 # inside the container; harmless
       PORT: 8080 # container-internal port
+      NODE_ENV: production
     # Host-side binding. Default 127.0.0.1:8770 => private to this VPS, no
     # public exposure, no chance of clashing with 80/443 or other backends.
     ports:
       - "${FLOW_BIND:-127.0.0.1}:${FLOW_PORT:-8770}:8080"
     restart: unless-stopped
+    # Docker uses the image's HEALTHCHECK directive by default; restate it here
+    # so a misconfigured base image can't silently disable liveness probing.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   # OPTIONAL reverse proxy with automatic HTTPS. It claims ports 80 and 443, so
   # ONLY use this if nothing else on the VPS is using them. If you already run
@@ -39,7 +49,12 @@ services:
     image: caddy:2
     profiles: ["https"]
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    environment:
+      # Forwarded to the Caddyfile as {$FLOW_DOMAIN}. Caddy refuses to start
+      # if this is empty — fail fast beats silently requesting a cert for "".
+      FLOW_DOMAIN: ${FLOW_DOMAIN:?FLOW_DOMAIN must be set for the https profile}
     ports:
       - "80:80"
       - "443:443"

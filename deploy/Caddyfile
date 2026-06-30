@@ -1,14 +1,20 @@
-# Automatic HTTPS for the Flow backend.
+# Automatic HTTPS for the Tulmi backend.
 #
 # 1. Point a domain (or subdomain) at your VPS:
 #       create a DNS "A record"  ->  flow.yourdomain.com  ->  YOUR_VPS_IP
-# 2. Replace flow.example.com below with that domain.
-# 3. Deploy with:  docker compose --profile https up -d --build
+# 2. Export the domain on the host (or set it in tulmi/.env so docker-compose
+#    forwards it into this container):
+#       export FLOW_DOMAIN=flow.yourdomain.com
+# 3. Deploy with:
+#       docker compose --profile https up -d --build
 #
 # Caddy fetches and renews a free Let's Encrypt certificate automatically and
 # transparently proxies both HTTPS and the WebSocket (wss://) traffic to the
-# backend container.
+# backend container. {$FLOW_DOMAIN} is Caddy-native env-var interpolation:
+# if FLOW_DOMAIN is unset, Caddy refuses to start (instead of silently trying
+# to issue a cert for "" or a placeholder host and burning a Let's Encrypt
+# rate-limit slot).
 
-flow.example.com {
+{$FLOW_DOMAIN} {
     reverse_proxy backend:8080
 }

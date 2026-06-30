@@ -40,6 +40,12 @@ const EnvSchema = z.object({
   GROQ_API_KEY: z.string().optional(),
   GROQ_STT_MODEL: z.string().default("whisper-large-v3-turbo"),
 
+  // Deepgram (used by the WS /v1/transcribe-stream route for live dictation —
+  // not the one-shot /v1/transcribe-clean path, which uses STT_PROVIDER above).
+  // Optional: without it the live route returns a "not configured" error and
+  // the app's fallback REST transcribe still works.
+  DEEPGRAM_API_KEY: z.string().optional(),
+
   // OpenRouter (cleanup) — required to run the pipeline.
   OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required"),
   CLEANUP_MODEL: z.string().default("anthropic/claude-haiku-4.5"),
@@ -61,13 +67,22 @@ const EnvSchema = z.object({
   // Server
   PORT: z.coerce.number().default(8080),
   HOST: z.string().default("0.0.0.0"),
+  NODE_ENV: z.string().optional(),
 
   // When true, auth + metering are skipped (local pipeline testing).
   DEV_SKIP_AUTH: bool(false),
+  // Explicit escape hatch for running with auth off in production-shaped envs
+  // (load tests, smoke checks). Off by default — see the boot-time refusal.
+  DEV_SKIP_AUTH_ALLOW_PROD: bool(false),
 
   // Prompt versions to load from shared/prompts/.
   CLEANUP_PROMPT_VERSION: z.string().default("v2"),
   REPLY_PROMPT_VERSION: z.string().default("v1"),
+
+  // Rate limiting (per IP / per Authorization header).
+  RATE_LIMIT_MAX: z.coerce.number().default(120),
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60_000),
+  RATE_LIMIT_UNAUTH_MAX: z.coerce.number().default(20),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema> & {
@@ -123,6 +138,19 @@ export function getConfig(): AppConfig {
       "Supabase auth is not configured but DEV_SKIP_AUTH is false. " +
         "Set SUPABASE_URL + SUPABASE_ANON_KEY (or SUPABASE_SERVICE_KEY), " +
         "or set DEV_SKIP_AUTH=true for local testing.",
+    );
+  }
+
+  // Hard refuse to boot in a production-shaped environment with auth disabled —
+  // a forgotten DEV_SKIP_AUTH=true is the single largest cost-amplification
+  // footgun (unauthenticated requests spend OpenAI/OpenRouter budget).
+  const isProd = env.NODE_ENV === "production";
+  if (env.DEV_SKIP_AUTH && isProd && !env.DEV_SKIP_AUTH_ALLOW_PROD) {
+    throw new Error(
+      "DEV_SKIP_AUTH=true is not allowed when NODE_ENV=production. " +
+        "Configure Supabase (SUPABASE_URL + SUPABASE_ANON_KEY) and remove " +
+        "DEV_SKIP_AUTH before deploying. To override for a controlled load " +
+        "test, set DEV_SKIP_AUTH_ALLOW_PROD=true (NOT recommended).",
     );
   }
 

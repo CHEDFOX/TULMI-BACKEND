@@ -1,0 +1,44 @@
+# Keep the Docker build context small + reproducible. The Dockerfile only
+# needs tulmi/ and shared/ — everything else is noise (or, for .git/.env*,
+# actively harmful in the image).
+
+.git
+.gitignore
+.gitattributes
+
+# Secrets must never enter the build context.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+
+# Docs & top-level READMEs — not needed at runtime.
+README.md
+DEPLOY.md
+docs/
+
+# Compose + reverse-proxy configs (used on the host, not inside the image).
+docker-compose.yml
+deploy/
+
+# Node + TS build artifacts that should be rebuilt cleanly inside the image.
+**/node_modules
+**/dist
+**/.tsbuildinfo
+**/*.log
+
+# Editor / OS noise.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test fixtures and one-off scripts the runtime doesn't need.
+tulmi/test-assets/
+tulmi/scripts/
+# Supabase SQL ships out-of-band via the SQL editor, not in the image.
+tulmi/supabase/
+
+# Source maps add weight + leak source paths.
+**/*.map
