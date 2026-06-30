@@ -52,9 +52,14 @@ services:
       backend:
         condition: service_healthy
     environment:
-      # Forwarded to the Caddyfile as {$FLOW_DOMAIN}. Caddy refuses to start
-      # if this is empty — fail fast beats silently requesting a cert for "".
-      FLOW_DOMAIN: ${FLOW_DOMAIN:?FLOW_DOMAIN must be set for the https profile}
+      # Forwarded to the Caddyfile as {$FLOW_DOMAIN}. We can't use ${...:?err}
+      # here because docker compose evaluates env interpolation for ALL services
+      # at parse time — even when the `https` profile is OFF — so a missing
+      # FLOW_DOMAIN would block plain `docker compose up`/`ps`/`logs`. Empty
+      # default lets the backend start without FLOW_DOMAIN; if someone enables
+      # the https profile without setting it, Caddy fails clearly on its own
+      # parse step (empty hostname is a syntax error).
+      FLOW_DOMAIN: ${FLOW_DOMAIN:-}
     ports:
       - "80:80"
       - "443:443"
