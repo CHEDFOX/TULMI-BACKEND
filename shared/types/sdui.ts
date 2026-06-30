@@ -80,8 +80,17 @@ export interface BootstrapResponse {
   labels?: Record<string, string>;
   /** Version gating — force or suggest an app update from the server. */
   update?: UpdateGate;
+  /** Languages for the native post-auth picker (code/name/greeting). */
+  languages?: LanguageOption[];
   /** Seconds the client may cache bootstrap before refetching. */
   cacheTtlSeconds?: number;
+}
+
+export interface LanguageOption {
+  code: string;
+  name: string;
+  greeting: string;
+  regions?: string[];
 }
 
 /**
@@ -253,6 +262,7 @@ export type ActionSpec =
   | { kind: "navigateBack" }
   | { kind: "switchTab"; tabId: string }
   | { kind: "openUrl"; url: string; external?: boolean }
+  | { kind: "openSettings"; target?: "app" | "keyboard" }
   | { kind: "dismiss" }
   // --- data & network ---
   | {
@@ -396,7 +406,7 @@ export interface KeyboardConfigResponse {
     voice: boolean;
     refine: boolean;
     /** Show a live-streaming dictation UI vs. one-shot. */
-    liveVoice: boolean;
+    streaming: boolean;
   };
   /** All user-facing strings, so copy is server-controlled. */
   labels: Record<string, string>; // e.g. { refine: "✨ Refine", listening: "Listening…" }

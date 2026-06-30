@@ -8,6 +8,7 @@
  * See ../../../shared/types/sdui.ts for the contract.
  */
 import type {
+  ActionRef,
   BootstrapResponse,
   KeyboardConfigResponse,
   NavigationShell,
@@ -22,16 +23,16 @@ import type { Personality, UsageSummary } from "../../../shared/types/api.js";
 
 export const THEME: ThemeTokens = {
   color: {
-    bg: "#0a0a0d", // near-black
-    surface: "#101015",
-    card: "#121219",
-    inputBg: "#16161d",
+    bg: "#000000",
+    surface: "#000000",
+    card: "#0b0b0f",
+    inputBg: "#0e0e12",
     border: "rgba(255,255,255,0.10)",
-    primary: "#5b4bff", // Tulmi accent (swap from the backend anytime)
-    text: "rgba(255,255,255,0.94)", // headings / primary text
-    body: "rgba(255,255,255,0.72)", // body prose
-    muted: "rgba(255,255,255,0.55)", // secondary
-    label: "rgba(255,255,255,0.38)", // overlines / faint labels
+    primary: "#FFFFFF", // white buttons; labels auto-contrast in the app
+    text: "rgba(255,255,255,0.96)",
+    body: "rgba(255,255,255,0.74)",
+    muted: "rgba(255,255,255,0.55)",
+    label: "rgba(255,255,255,0.42)",
     danger: "#e0556b",
     success: "#4caf50",
   },
@@ -49,7 +50,6 @@ const NAV: NavigationShell = {
   kind: "tabs",
   tabs: [
     { id: "home", title: "Home", screenId: "home" },
-    { id: "reply", title: "Reply", screenId: "reply" },
     { id: "personality", title: "You", screenId: "personality" },
     { id: "settings", title: "Settings", screenId: "settings" },
   ],
@@ -78,13 +78,37 @@ export function buildBootstrap(opts: { onboarded?: boolean } = {}): BootstrapRes
     flags: {},
     // Central copy — every screen can reference these with "@key".
     labels: {
-      "app.name": "Tulmi",
-      "onboarding.title": "Welcome to Tulmi",
-      "onboarding.subtitle": "Speak or type rough — Tulmi makes it sound like you.",
-      "onboarding.cta": "Get started",
-      "home.refine": "✨ Refine",
-      "common.save": "Save",
+      "app.name": "Tailzu",
+      "onboarding.title": "Welcome To Tailzu",
+      "onboarding.subtitle": "Speak Or Type Rough — Tailzu Makes It Sound Like You.",
+      "onboarding.cta": "Get Started",
     },
+    languages: [
+      { code: "en", name: "English", greeting: "Hello", regions: ["US","GB","CA","AU","IN"] },
+      { code: "hi", name: "हिन्दी", greeting: "नमस्ते", regions: ["IN"] },
+      { code: "es", name: "Español", greeting: "Hola", regions: ["ES","MX","AR"] },
+      { code: "fr", name: "Français", greeting: "Bonjour", regions: ["FR","CA"] },
+      { code: "ar", name: "العربية", greeting: "مرحبا", regions: ["AE","SA","EG"] },
+      { code: "pt", name: "Português", greeting: "Olá", regions: ["PT","BR"] },
+      { code: "de", name: "Deutsch", greeting: "Hallo", regions: ["DE"] },
+      { code: "it", name: "Italiano", greeting: "Ciao", regions: ["IT"] },
+      { code: "ru", name: "Русский", greeting: "Привет", regions: ["RU"] },
+      { code: "ja", name: "日本語", greeting: "こんにちは", regions: ["JP"] },
+      { code: "ko", name: "한국어", greeting: "안녕하세요", regions: ["KR"] },
+      { code: "zh", name: "中文", greeting: "你好", regions: ["CN"] },
+      { code: "bn", name: "বাংলা", greeting: "নমস্কার", regions: ["BD","IN"] },
+      { code: "ta", name: "தமிழ்", greeting: "வணக்கம்", regions: ["IN","LK"] },
+      { code: "te", name: "తెలుగు", greeting: "నమస్కారం", regions: ["IN"] },
+      { code: "mr", name: "मराठी", greeting: "नमस्कार", regions: ["IN"] },
+      { code: "gu", name: "ગુજરાતી", greeting: "નમસ્તે", regions: ["IN"] },
+      { code: "pa", name: "ਪੰਜਾਬੀ", greeting: "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ", regions: ["IN"] },
+      { code: "ur", name: "اردو", greeting: "السلام علیکم", regions: ["PK","IN"] },
+      { code: "tr", name: "Türkçe", greeting: "Merhaba", regions: ["TR"] },
+      { code: "id", name: "Indonesia", greeting: "Halo", regions: ["ID"] },
+      { code: "vi", name: "Tiếng Việt", greeting: "Xin chào", regions: ["VN"] },
+      { code: "th", name: "ไทย", greeting: "สวัสดี", regions: ["TH"] },
+      { code: "nl", name: "Nederlands", greeting: "Hallo", regions: ["NL"] },
+    ],
     // Version gate (dormant: thresholds are at/below the shipped app version, so
     // it won't fire — flip these to force/suggest an update from the server).
     update: {
@@ -110,12 +134,21 @@ export interface ScreenContext {
   language: string;
   email?: string;
   usage?: UsageSummary;
+  name?: string;
+  dictionary?: Array<{ word: string; replacement: string }>;
+  frequentWords?: string[];
 }
 
 export function buildScreen(screenId: string, ctx: ScreenContext): ScreenResponse | null {
   switch (screenId) {
     case "home":
       return homeScreen(ctx);
+    case "dictionary":
+      return dictionaryScreen(ctx);
+    case "language_select":
+      return languageSelectScreen(ctx);
+    case "delete_account":
+      return deleteAccountScreen();
     case "reply":
       return replyScreen();
     case "personality":
@@ -149,75 +182,67 @@ const LANGUAGES: Array<{ value: string; label: string }> = [
 
 /** The refine playground — proves the full SDUI loop incl. a brain call. */
 function homeScreen(ctx: ScreenContext): ScreenResponse {
+  const titleStyle = { fontSize: 30, fontWeight: "800" as const, color: "$color.text", marginBottom: 24 };
+
+  const boxWithVoice = (bindKey: string): Node => ({
+    type: "Stack", style: { position: "relative" }, children: [
+      { type: "TextField", bind: { value: bindKey }, props: { placeholder: "Type here…", multiline: true }, style: { paddingRight: 56, minHeight: 96 } },
+      { type: "Stack", style: { position: "absolute", right: 12, top: 0, bottom: 0, justify: "center" }, children: [
+        { type: "VoiceToggle", bind: { value: bindKey }, props: { targetApp: "WhatsApp", language: "auto", size: 38 }, on: { onError: "err" } },
+      ] },
+    ],
+  });
+
   return {
     schemaVersion: SDUI_SCHEMA_VERSION,
     screenId: "home",
-    title: "Tulmi",
+    title: "",
     state: {
-      input: "hey can we meet kal at 5 i think um",
-      busy: false,
-      result: {},
+      input: "", screenContent: "", intent: "", result: "", recording: false,
+      dictionary: ctx.dictionary ?? [],
+      frequentWords: ctx.frequentWords ?? [],
     },
     actions: {
-      refine: {
-        kind: "sequence",
-        actions: [
-          { kind: "setState", path: "busy", value: true },
-          {
-            kind: "callEndpoint",
-            method: "POST",
-            path: "/v1/refine",
-            body: { text: "$state.input", targetApp: "WhatsApp", language: "auto" },
-            assignTo: "result",
-            onSuccess: "refineDone",
-            onError: "refineErr",
-          },
-        ],
-      },
-      refineDone: {
-        kind: "sequence",
-        actions: [
-          { kind: "setState", path: "busy", value: false },
-          { kind: "haptic", style: "success" },
-        ],
-      },
-      refineErr: {
-        kind: "sequence",
-        actions: [
-          { kind: "setState", path: "busy", value: false },
-          { kind: "toast", message: "Couldn't reach the backend. Check ⚙ Connection.", tone: "error" },
-        ],
-      },
-      voiceErr: { kind: "toast", message: "Voice failed. Allow mic + check your key.", tone: "error" },
+      err: { kind: "toast", message: "Something went wrong. Check your connection.", tone: "error" },
+      openDictionary: { kind: "navigate", screenId: "dictionary" },
     },
     root: {
       type: "Screen",
       children: [
-        { type: "Overline", props: { content: "Playground" } },
-        { type: "Heading", props: { content: "Make it sound like you" } },
-        { type: "Paragraph", props: { content: "Just speak — your words appear and polish themselves." }, style: { marginBottom: 22 } },
-        { type: "Text", props: { content: "Your text", variant: "label" } },
-        {
-          type: "TextField",
-          bind: { value: "input" },
-          props: { placeholder: "Type here…", multiline: true },
-        },
-        spacer(10),
-        text("Or speak — it fills the box above:", "label"),
-        {
-          type: "VoiceButton",
-          bind: { value: "input" },
-          props: { targetApp: "WhatsApp", language: ctx.language ?? "auto", live: true },
-          on: { onError: "voiceErr" },
-        },
-        spacer(16),
-        { type: "ProgressBar", visibleIf: { truthy: "busy" } },
-        {
-          type: "Card",
-          visibleIf: { truthy: "result.refinedText" },
-          motion: { appear: "fadeInUp" },
-          children: [text("", "body", { bind: { content: "result.refinedText" } })],
-        },
+        // 1) Refine ⇄ Reply swipe (fixed-height pager inside the vertical scroll)
+        { type: "Pager", props: { hint: true, peek: 44, height: 360 }, children: [
+          { type: "Stack", style: { paddingHorizontal: 24, paddingTop: 16 }, children: [
+            { type: "Heading", props: { content: "Make it sound like you" }, style: titleStyle },
+            boxWithVoice("input"),
+            { type: "Spacer", style: { height: 22 } },
+            { type: "Stack", style: { align: "center" }, children: [
+              { type: "RefineButton", bind: { value: "input" }, props: { targetApp: "WhatsApp", language: "auto", width: 160 }, on: { onError: "err" } },
+            ] },
+          ] },
+          { type: "Stack", style: { paddingHorizontal: 24, paddingTop: 16 }, children: [
+            { type: "Heading", props: { content: "Reply in your voice" }, style: titleStyle },
+            { type: "TextField", bind: { value: "screenContent" }, props: { placeholder: "Paste their message…", multiline: true }, style: { minHeight: 70 } },
+            { type: "Spacer", style: { height: 14 } },
+            boxWithVoice("intent"),
+            { type: "Spacer", style: { height: 18 } },
+            { type: "Stack", style: { align: "center" }, children: [
+              { type: "DraftButton", bind: { value: "intent" }, props: { messageKey: "screenContent", resultKey: "result", width: 160 }, on: { onError: "err" } },
+            ] },
+          ] },
+        ] },
+
+        { type: "Spacer", style: { height: 56 } }, // HIGH gap between sections
+
+        // 2) Dictionary (tappable header → full page)
+        { type: "Row", props: { label: "Dictionary" }, on: { onPress: "openDictionary" }, style: { borderBottomWidth: 0, paddingVertical: 4, marginBottom: 10 } },
+        { type: "DictionaryEditor", bind: { value: "dictionary" }, props: { rows: 2 }, on: { onError: "err" } },
+
+        { type: "Spacer", style: { height: 56 } }, // HIGH gap
+
+        // 3) The user's frequent words (computed by the backend)
+        { type: "Heading", props: { content: `${ctx.name ?? "Your"}'s words` }, style: { fontSize: 22, fontWeight: "800", color: "$color.text", marginBottom: 4 } },
+        { type: "Text", props: { content: "Words you use often", variant: "muted" }, style: { marginBottom: 16 } },
+        { type: "WordChips", bind: { value: "frequentWords" } },
       ],
     },
     cacheTtlSeconds: 0,
@@ -226,145 +251,89 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
 
 /** The personality form — server seeds it with the user's saved profile. */
 function personalityScreen(p: Personality): ScreenResponse {
+  const SECTION = 30; // consistent gap between sections
   const chip = (label: string, group: string, value: string): Node => ({
     type: "Chip",
     props: { label, group, value },
     on: { onPress: { kind: "haptic", style: "selection" } },
   });
+  const label = (content: string): Node => ({ type: "Text", props: { content, variant: "label" }, style: { marginBottom: 8 } });
+  const gap = (h: number): Node => ({ type: "Spacer", style: { height: h } });
 
   return {
     schemaVersion: SDUI_SCHEMA_VERSION,
     screenId: "personality",
-    title: "Your personality",
+    title: "",
     state: {
       form: {
         tone: p.tone ?? "",
         formality: p.formality ?? "neutral",
         emoji: p.emoji ?? "minimal",
+        vocabulary: p.vocabulary ?? "",
+        // preserved across saves even though they're not shown here:
         customInstructions: p.customInstructions ?? "",
         signature: p.signature ?? "",
-        vocabulary: p.vocabulary ?? "",
         snippets: p.snippets ?? "",
       },
       status: "",
       sample: "",
     },
     actions: {
-      save: {
-        kind: "sequence",
-        actions: [
-          { kind: "setState", path: "status", value: "Saving…" },
-          {
-            kind: "callEndpoint",
-            method: "PUT",
-            path: "/v1/personality",
-            body: "$state.form",
-            onSuccess: "saved",
-            onError: "saveErr",
-          },
-        ],
-      },
-      saved: {
-        kind: "sequence",
-        actions: [
-          { kind: "setState", path: "status", value: "Saved. Tulmi will write in this voice." },
-          { kind: "haptic", style: "success" },
-        ],
-      },
-      saveErr: { kind: "toast", message: "Couldn't save. Check ⚙ Connection.", tone: "error" },
-      learn: {
-        kind: "sequence",
-        actions: [
-          { kind: "setState", path: "status", value: "Learning your voice…" },
-          { kind: "callEndpoint", method: "POST", path: "/v1/personality/learn", body: { sample: "$state.sample" }, onSuccess: "learned", onError: "saveErr" },
-        ],
-      },
-      learned: {
-        kind: "sequence",
-        actions: [
-          { kind: "haptic", style: "success" },
-          { kind: "toast", message: "Learned your voice — updating…", tone: "success" },
-          { kind: "refresh" },
-        ],
-      },
+      save: { kind: "sequence", actions: [
+        { kind: "setState", path: "status", value: "Saving…" },
+        { kind: "callEndpoint", method: "PUT", path: "/v1/personality", body: "$state.form", onSuccess: "saved", onError: "saveErr" },
+      ] },
+      saved: { kind: "sequence", actions: [
+        { kind: "setState", path: "status", value: "Saved. Tailzu writes in this voice." },
+        { kind: "haptic", style: "success" },
+      ] },
+      saveErr: { kind: "toast", message: "Couldn't save. Check your connection.", tone: "error" },
+      learn: { kind: "sequence", actions: [
+        { kind: "setState", path: "status", value: "Learning your voice…" },
+        { kind: "callEndpoint", method: "POST", path: "/v1/personality/learn", body: { sample: "$state.sample" }, onSuccess: "learned", onError: "saveErr" },
+      ] },
+      learned: { kind: "sequence", actions: [
+        { kind: "haptic", style: "success" },
+        { kind: "toast", message: "Learned your voice — updating…", tone: "success" },
+        { kind: "refresh" },
+      ] },
     },
     root: {
       type: "Screen",
       children: [
-        { type: "Overline", props: { content: "Your voice" } },
-        text("Your personality", "h1"),
-        { type: "Paragraph", props: { content: "Set once — applied to everything Tulmi writes for you." }, style: { marginBottom: 20 } },
+        { type: "Heading", props: { content: "Your personality" }, style: { fontSize: 30, fontWeight: "800", color: "$color.text", marginBottom: 10 } },
+        { type: "Paragraph", props: { content: "Set once — it shapes everything Tailzu writes for you." }, style: { marginBottom: SECTION } },
 
-        text("Tone", "label"),
+        label("Tone"),
         { type: "TextField", bind: { value: "form.tone" }, props: { placeholder: "warm and concise, a little witty" } },
+        gap(SECTION),
 
-        spacer(12),
-        text("Formality", "label"),
-        {
-          type: "Stack",
-          style: { direction: "row", gap: 8 },
-          children: [
-            chip("casual", "form.formality", "casual"),
-            chip("neutral", "form.formality", "neutral"),
-            chip("formal", "form.formality", "formal"),
-          ],
-        },
+        label("Formality"),
+        { type: "Stack", style: { direction: "row", gap: 8 }, children: [
+          chip("casual", "form.formality", "casual"), chip("neutral", "form.formality", "neutral"), chip("formal", "form.formality", "formal"),
+        ] },
+        gap(SECTION),
 
-        spacer(12),
-        text("Emoji", "label"),
-        {
-          type: "Stack",
-          style: { direction: "row", gap: 8 },
-          children: [
-            chip("none", "form.emoji", "none"),
-            chip("minimal", "form.emoji", "minimal"),
-            chip("expressive", "form.emoji", "expressive"),
-          ],
-        },
+        label("Emoji"),
+        { type: "Stack", style: { direction: "row", gap: 8 }, children: [
+          chip("none", "form.emoji", "none"), chip("minimal", "form.emoji", "minimal"), chip("expressive", "form.emoji", "expressive"),
+        ] },
+        gap(SECTION),
 
-        spacer(12),
-        text("Extra instructions", "label"),
-        {
-          type: "TextField",
-          bind: { value: "form.customInstructions" },
-          props: { placeholder: "avoid exclamation marks; British spelling", multiline: true },
-        },
+        label("Words it should know"),
+        { type: "TextField", bind: { value: "form.vocabulary" }, props: { placeholder: "Aarav\nNykaa\nKubernetes", multiline: true } },
+        gap(SECTION + 2),
 
-        spacer(12),
-        text("Words Tulmi should know", "label"),
-        { type: "Paragraph", props: { content: "Names, brands, or jargon to spell right — one per line." }, style: { marginBottom: 6 } },
-        {
-          type: "TextField",
-          bind: { value: "form.vocabulary" },
-          props: { placeholder: "Aarav\nNykaa\nKubernetes", multiline: true },
-        },
+        { type: "Button", props: { label: "Save", variant: "primary" }, on: { onPress: "save" } },
+        { type: "Text", bind: { content: "status" }, props: { variant: "muted" }, style: { marginTop: 10, textAlign: "center" } },
 
-        spacer(12),
-        text("Snippets", "label"),
-        { type: "Paragraph", props: { content: "Shortcuts that expand. One per line: trigger = full text." }, style: { marginBottom: 6 } },
-        {
-          type: "TextField",
-          bind: { value: "form.snippets" },
-          props: { placeholder: "eod = I'll have this done by end of day, thanks!", multiline: true },
-        },
-
-        spacer(16),
-        { type: "Button", props: { label: "Save personality", variant: "primary" }, on: { onPress: "save" } },
-        spacer(8),
-        text("", "muted", { bind: { content: "status" } }),
-
-        spacer(24),
+        gap(40),
         { type: "Divider" },
-        spacer(20),
-        { type: "Overline", props: { content: "Or learn it automatically" } },
-        text("Learn my voice from a sample", "label"),
-        { type: "Paragraph", props: { content: "Paste a few of your real messages — Tulmi fills in your style above." }, style: { marginBottom: 8 } },
-        {
-          type: "TextField",
-          bind: { value: "sample" },
-          props: { placeholder: "Paste a few messages you've written…", multiline: true },
-        },
-        spacer(10),
+        gap(28),
+
+        label("Or learn it from a sample"),
+        { type: "TextField", bind: { value: "sample" }, props: { placeholder: "Paste a few messages you've written…", multiline: true } },
+        gap(14),
         { type: "Button", props: { label: "Learn my voice", variant: "secondary" }, on: { onPress: "learn" } },
       ],
     },
@@ -452,75 +421,33 @@ function replyScreen(): ScreenResponse {
 
 /** Settings — server-driven app info, account, language, and links. */
 function settingsScreen(ctx: ScreenContext): ScreenResponse {
-  const langChip = (l: { value: string; label: string }): Node => ({
-    type: "Chip",
-    props: { label: l.label, group: "language", value: l.value },
-    on: {
-      onPress: {
-        kind: "sequence",
-        actions: [
-          { kind: "haptic", style: "selection" },
-          { kind: "callEndpoint", method: "PUT", path: "/v1/profile", body: { language: l.value } },
-          { kind: "toast", message: `Language set to ${l.label}`, tone: "success" },
-        ],
-      },
-    },
+  const current = LANGUAGES.find((l) => l.value === ctx.language)?.label ?? "Auto";
+  const row = (label: string, action: ActionRef, extra: Partial<Node> = {}): Node => ({
+    type: "Row", props: { label }, on: { onPress: action }, ...extra,
   });
 
   return {
     schemaVersion: SDUI_SCHEMA_VERSION,
     screenId: "settings",
-    title: "Settings",
+    title: "",
     state: { language: ctx.language },
     actions: {
-      openDocs: { kind: "openUrl", url: "https://github.com/CHEDFOX/tulmi", external: true },
-      reloadApp: { kind: "refresh" },
       signOut: { kind: "signOut" },
+      privacy: { kind: "openUrl", url: "https://tailzu.space/privacy", external: true },
+      terms: { kind: "openUrl", url: "https://tailzu.space/terms", external: true },
     },
     root: {
       type: "Screen",
       children: [
-        { type: "Overline", props: { content: "Tulmi" } },
-        text("Settings", "h1"),
-        spacer(8),
-        {
-          type: "Card",
-          children: [
-            text("Signed in", "label"),
-            text(ctx.email ?? "Your account", "body"),
-          ],
-        },
+        // Title on the right, with a generous gap before the list
+        { type: "Heading", props: { content: "Settings" }, style: { fontSize: 30, fontWeight: "800", color: "$color.text", textAlign: "right", marginBottom: 64 } },
 
-        spacer(20),
-        text("Language", "label"),
-        { type: "Paragraph", props: { content: "What you mostly speak and type. Tulmi adapts to this." }, style: { marginBottom: 10 } },
-        {
-          type: "Stack",
-          style: { direction: "row", gap: 8, wrap: "wrap" },
-          children: LANGUAGES.map(langChip),
-        },
-
-        spacer(20),
-        { type: "Divider" },
-        spacer(20),
-        text("App", "label"),
-        spacer(8),
-        text("Backend connection is set via the ⚙ button (top-right).", "muted"),
-        spacer(12),
-        { type: "Button", props: { label: "Open project on GitHub", variant: "secondary" }, on: { onPress: "openDocs" } },
-        spacer(8),
-        { type: "Button", props: { label: "Reload from server", variant: "secondary" }, on: { onPress: "reloadApp" } },
-        spacer(8),
-        { type: "Button", props: { label: "Your usage", variant: "secondary" }, on: { onPress: { kind: "navigate", screenId: "stats" } } },
-        spacer(8),
-        { type: "Button", props: { label: "See the intro again", variant: "secondary" }, on: { onPress: { kind: "navigate", screenId: "onboarding" } } },
-
-        spacer(20),
-        { type: "Divider" },
-        spacer(20),
-        text("Account", "label"),
-        spacer(8),
-        { type: "Button", props: { label: "Sign out", variant: "secondary" }, on: { onPress: "signOut" } },
+        // Rows
+        row("Language", { kind: "navigate", screenId: "language_select" }, { props: { label: "Language", value: current } }),
+        row("Privacy Policy", "privacy"),
+        row("Terms of Use", "terms"),
+        row("Sign out", "signOut", { props: { label: "Sign out", chevron: false } }),
+        row("Delete account", { kind: "navigate", screenId: "delete_account" }, { props: { label: "Delete account", danger: true, chevron: false } }),
       ],
     },
     cacheTtlSeconds: 0,
@@ -682,48 +609,101 @@ function onboardingLanguage(current: string): ScreenResponse {
 
 /** Step 3 — enable the Tulmi keyboard, then finish (marks onboarded). */
 function onboardingKeyboard(): ScreenResponse {
-  const row = (n: string, body: string): Node => ({
-    type: "Stack",
-    style: { direction: "row", gap: 12 },
-    children: [
-      { type: "Text", props: { content: n }, style: { color: "$color.primary", fontSize: 16, fontWeight: "700" } },
+  const step = (n: string, body: string): Node => ({
+    type: "Stack", style: { direction: "row", gap: 12 }, children: [
+      { type: "Text", props: { content: n }, style: { color: "$color.text", fontSize: 16, fontWeight: "700" } },
       { type: "Paragraph", props: { content: body }, style: { marginBottom: 0, flex: 1 } },
     ],
   });
   return {
     schemaVersion: SDUI_SCHEMA_VERSION,
     screenId: "onboarding_keyboard",
-    title: "Enable keyboard",
+    title: "",
     template: "scroll",
-    state: {},
+    state: { keyboardReady: false }, // the app overwrites this live
     actions: {
-      finish: {
-        kind: "sequence",
-        actions: [
-          { kind: "callEndpoint", method: "PUT", path: "/v1/profile", body: { onboarded: true } },
-          { kind: "haptic", style: "success" },
-          { kind: "switchTab", tabId: "home" },
-        ],
-      },
+      openSettings: { kind: "openSettings", target: "keyboard" },
+      finish: { kind: "sequence", actions: [
+        { kind: "callEndpoint", method: "PUT", path: "/v1/profile", body: { onboarded: true } },
+        { kind: "haptic", style: "success" },
+        { kind: "switchTab", tabId: "home" },
+      ] },
     },
     blocks: [
-      ...stepHeader(3, 3, "Keyboard"),
-      { type: "Heading", props: { content: "Turn on the Tulmi keyboard" }, style: { textAlign: "center", fontSize: 26, lineHeight: 32, marginBottom: 10 } },
-      { type: "Paragraph", props: { content: "The Tulmi keyboard adds voice + ✨ Refine inside every app — WhatsApp, email, anywhere you type." }, style: { textAlign: "center", marginBottom: 28 } },
-      {
-        type: "Card",
-        children: [
-          row("1", "Open your phone's Settings → System → Languages & input → On-screen keyboard."),
-          { type: "Spacer", style: { height: 12 } },
-          row("2", "Enable “Tulmi”, then set it as your keyboard (tap the 🌐 globe key to switch)."),
-          { type: "Spacer", style: { height: 12 } },
-          row("3", "Allow Full Access so voice + Refine can reach the server."),
-        ],
-      },
-      { type: "Paragraph", props: { content: "You can do this later too — it’s in Settings whenever you’re ready." }, style: { textAlign: "center", marginTop: 20 } },
-      { type: "Spacer", style: { height: 32 } },
-      { type: "Button", props: { label: "Finish — start using Tulmi", variant: "primary" }, on: { onPress: "finish" } },
+      { type: "Card", children: [
+        step("1", "Open Settings and add the Tailzu keyboard."),
+        { type: "Spacer", style: { height: 14 } },
+        step("2", "Turn on “Allow Full Access”."),
+        { type: "Spacer", style: { height: 14 } },
+        step("3", "Tap the 🌐 globe to switch to Tailzu once."),
+      ] },
+      { type: "Spacer", style: { height: 28 } },
+      { type: "Button", visibleIf: { not: { truthy: "keyboardReady" } },
+        props: { label: "Open Keyboard Settings", variant: "primary" }, on: { onPress: "openSettings" } },
+      { type: "Button", visibleIf: { truthy: "keyboardReady" },
+        props: { label: "Start Using Tailzu", variant: "primary" }, on: { onPress: "finish" } },
     ],
+    cacheTtlSeconds: 0,
+  };
+}
+
+function dictionaryScreen(ctx: ScreenContext): ScreenResponse {
+  return {
+    schemaVersion: SDUI_SCHEMA_VERSION,
+    screenId: "dictionary",
+    title: "Dictionary",
+    state: { dictionary: ctx.dictionary ?? [] },
+    actions: { err: { kind: "toast", message: "Couldn't save.", tone: "error" } },
+    root: { type: "Screen", children: [
+      { type: "Heading", props: { content: "Dictionary" }, style: { fontSize: 28, fontWeight: "800", color: "$color.text", marginBottom: 8 } },
+      { type: "Paragraph", props: { content: "Type the word, get the replacement — anywhere you use the Tailzu keyboard." }, style: { marginBottom: 28 } },
+      { type: "DictionaryEditor", bind: { value: "dictionary" }, props: { full: true }, on: { onError: "err" } },
+    ] },
+    cacheTtlSeconds: 0,
+  };
+}
+
+function languageSelectScreen(ctx: ScreenContext): ScreenResponse {
+  const row = (l: { value: string; label: string }): Node => ({
+    type: "Row",
+    props: { label: l.label, value: l.value === ctx.language ? "✓" : "", chevron: false },
+    on: { onPress: { kind: "sequence", actions: [
+      { kind: "haptic", style: "selection" },
+      { kind: "callEndpoint", method: "PUT", path: "/v1/profile", body: { language: l.value } },
+      { kind: "navigateBack" },
+    ] } },
+  });
+  return {
+    schemaVersion: SDUI_SCHEMA_VERSION,
+    screenId: "language_select",
+    title: "Language",
+    state: { language: ctx.language },
+    actions: {},
+    root: { type: "Screen", children: LANGUAGES.map(row) },
+    cacheTtlSeconds: 0,
+  };
+}
+
+function deleteAccountScreen(): ScreenResponse {
+  return {
+    schemaVersion: SDUI_SCHEMA_VERSION,
+    screenId: "delete_account",
+    title: "",
+    state: {},
+    actions: {
+      confirm: { kind: "sequence", actions: [
+        { kind: "callEndpoint", method: "DELETE", path: "/v1/account", onError: "err" },
+        { kind: "signOut" },
+      ] },
+      err: { kind: "toast", message: "Couldn't delete the account. Try again.", tone: "error" },
+    },
+    root: { type: "Screen", children: [
+      { type: "Heading", props: { content: "Delete account" }, style: { fontSize: 28, fontWeight: "800", color: "$color.text", marginBottom: 14 } },
+      { type: "Paragraph", props: { content: "This permanently deletes your account, your personality, and your usage. This cannot be undone." }, style: { marginBottom: 32 } },
+      { type: "Button", props: { label: "Delete my account", variant: "danger" }, on: { onPress: "confirm" } },
+      { type: "Spacer", style: { height: 10 } },
+      { type: "Button", props: { label: "Cancel", variant: "secondary" }, on: { onPress: { kind: "navigateBack" } } },
+    ] },
     cacheTtlSeconds: 0,
   };
 }
@@ -747,11 +727,11 @@ export function buildKeyboardConfig(): KeyboardConfigResponse {
           ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
           ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
           ["{shift}", "z", "x", "c", "v", "b", "n", "m", "{backspace}"],
-          ["{globe}", "{mic}", "{space}", "{return}"],
+          ["{globe}", "{mic}", "{refine}", "{space}", "{return}"],
         ],
       },
     ],
-    features: { voice: true, refine: true, liveVoice: true },
+    features: { voice: true, refine: true, streaming: false },
     labels: {
       refine: "✨ Refine",
       listening: "Listening… tap to stop",

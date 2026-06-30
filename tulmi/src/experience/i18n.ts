@@ -29,11 +29,11 @@ type AnyResponse = BootstrapResponse | ScreenResponse;
 
 /** Tulmi language code → human name used in the translation prompt. */
 const LANGUAGE_NAMES: Record<string, string> = {
-  hi: "Hindi",
-  es: "Spanish",
-  fr: "French",
-  ar: "Arabic",
-  pt: "Portuguese",
+  hi: "Hindi", es: "Spanish", fr: "French", ar: "Arabic", pt: "Portuguese",
+  de: "German", it: "Italian", ru: "Russian", ja: "Japanese", ko: "Korean",
+  zh: "Chinese (Simplified)", bn: "Bengali", ta: "Tamil", te: "Telugu",
+  mr: "Marathi", gu: "Gujarati", pa: "Punjabi", ur: "Urdu", tr: "Turkish",
+  id: "Indonesian", vi: "Vietnamese", th: "Thai", nl: "Dutch",
   hinglish:
     "Hinglish (Hindi written in Latin/Roman script — casual, modern Indian texting style)",
 };
@@ -42,9 +42,9 @@ const LANGUAGE_NAMES: Record<string, string> = {
 const RTL = new Set(["ar", "he", "fa", "ur"]);
 
 /** Exact strings we never translate (brand, etc.). */
-const KEEP = new Set(["Tulmi"]);
+const KEEP = new Set(["Tailzu"]);
 
-const BRAND_NOTE = "Never translate the brand name 'Tulmi' — keep it exactly.";
+const BRAND_NOTE = "Never translate the brand name 'Tailzu' — keep it exactly.";
 
 function langInfo(language: string | undefined): { code: string; name: string } | null {
   const code = (language || "").trim().toLowerCase();
