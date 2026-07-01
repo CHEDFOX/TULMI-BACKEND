@@ -30,6 +30,18 @@ function openrouter(): OpenAI {
 const TEMPERATURE = 0.2; // low: faithful cleanup, not creativity
 const REPLY_TEMPERATURE = 0.4; // a touch more latitude for natural drafting
 
+// Output ceilings. Set explicitly so OpenRouter's per-request credit
+// reservation matches what we actually produce (~200 tokens for cleanup,
+// ~500 for a reply). Without this, OpenRouter reserves the model's full
+// context ceiling (64k+ tokens) upfront and rejects small-balance accounts
+// even though the real cost is a fraction of a cent.
+//
+// Real outputs are almost always shorter than the input — cleanup collapses
+// filler, reply drafts hit medium length. These caps leave generous headroom.
+const MAX_TOKENS_CLEANUP = 1024;   // ≈ 750 words of cleaned text
+const MAX_TOKENS_REPLY = 2048;     // ≈ 1500 words — email-length drafts
+const MAX_TOKENS_STYLE = 512;      // small JSON blob
+
 // --- Snippets (text expansion) ---------------------------------------------
 
 function escapeRegExp(s: string): string {
@@ -70,6 +82,7 @@ export async function clean(
   const res = await openrouter().chat.completions.create({
     model: getConfig().CLEANUP_MODEL,
     temperature: TEMPERATURE,
+    max_tokens: MAX_TOKENS_CLEANUP,
     messages: [
       { role: "system", content: buildCleanupSystem(opts) },
       { role: "user", content: input },
@@ -87,6 +100,7 @@ export async function* cleanStream(
   const stream = await openrouter().chat.completions.create({
     model: getConfig().CLEANUP_MODEL,
     temperature: TEMPERATURE,
+    max_tokens: MAX_TOKENS_CLEANUP,
     stream: true,
     messages: [
       { role: "system", content: buildCleanupSystem(opts) },
@@ -116,6 +130,7 @@ export async function draftReply(
   const res = await openrouter().chat.completions.create({
     model: getConfig().CLEANUP_MODEL,
     temperature: REPLY_TEMPERATURE,
+    max_tokens: MAX_TOKENS_REPLY,
     messages: [
       { role: "system", content: buildReplySystem(opts, recipient) },
       { role: "user", content: userMsg },
@@ -144,6 +159,7 @@ export async function inferStyle(sample: string): Promise<Partial<Personality>> 
   const res = await openrouter().chat.completions.create({
     model: getConfig().CLEANUP_MODEL,
     temperature: LEARN_TEMPERATURE,
+    max_tokens: MAX_TOKENS_STYLE,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: system },
