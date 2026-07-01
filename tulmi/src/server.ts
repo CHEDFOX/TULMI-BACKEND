@@ -13,14 +13,15 @@
  * Every output is shaped by the user's personality + the target-app context,
  * resolved here on the backend (the app just sends the inputs).
  */
+import { createHash } from "node:crypto";
 import Fastify from "fastify";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import transcribeStream from "./routes/transcribe-stream.js";
 import { getConfig, VERSION } from "./config.js";
-import { resolveUser, type AuthedUser } from "./auth/supabase.js";
-import { recordUsage, usageSummary, usageWindows } from "./usage/metering.js";
+import { resolveUser, supabase, type AuthedUser } from "./auth/supabase.js";
+import { enforceQuota, recordUsage, usageSummary, usageWindows } from "./usage/metering.js";
 import { captureException, fastifyLoggerOptions, initSentry } from "./observability.js";
 import { getProfile, updateProfile } from "./profile/store.js";
 import { runPipeline, runPipelineStream } from "./pipeline/index.js";
@@ -77,9 +78,9 @@ await app.register(multipart, {
 });
 await app.register(websocket);
 
-// Rate-limit /v1/* routes. The keyGenerator falls back to IP for anonymous
-// callers (SDUI bootstrap/screen) and uses the bearer token for authed callers
-// so one user can't blow another's budget. Health/readiness are excluded so
+// Rate-limit /v1/* routes. The key is the SHA-256 of the bearer token (so an
+// attacker rotating fake tokens can't sidestep their per-user budget), or the
+// client IP for anonymous callers. Health/readiness are excluded so
 // load-balancer probes are never throttled.
 await app.register(rateLimit, {
   global: false,
@@ -87,8 +88,14 @@ await app.register(rateLimit, {
   timeWindow: cfg.RATE_LIMIT_WINDOW_MS,
   keyGenerator: (req) => {
     const auth = req.headers["authorization"];
-    if (typeof auth === "string" && auth.length > 7) return auth;
-    return req.ip;
+    if (typeof auth === "string" && auth.length > 7) {
+      // Hash the bearer so log lines / error reports never carry raw JWTs, and
+      // so an attacker rotating a fake token can't "look" like a fresh user
+      // per request. Truncated to 24 hex = 96 bits, plenty for a rate-limit key.
+      const tok = auth.replace(/^Bearer\s+/i, "").trim();
+      return "u:" + createHash("sha256").update(tok).digest("hex").slice(0, 24);
+    }
+    return "ip:" + req.ip;
   },
 });
 
@@ -97,6 +104,16 @@ await app.register(transcribeStream);
 function countWords(text: string): number {
   const t = text.trim();
   return t ? t.split(/\s+/).length : 0;
+}
+
+/** Refuse strings whose length exceeds the config-defined MAX_TEXT_LENGTH.
+ *  Returns an error message when over-cap; null when ok. */
+function tooLong(text: string | undefined): string | null {
+  if (text == null) return null;
+  if (text.length > cfg.MAX_TEXT_LENGTH) {
+    return `text exceeds ${cfg.MAX_TEXT_LENGTH} chars (got ${text.length})`;
+  }
+  return null;
 }
 
 // --- Health -----------------------------------------------------------------
@@ -211,6 +228,9 @@ app.post("/v1/transcribe-clean", { config: AUTHED_RL }, async (req, reply) => {
     return reply.code(400).send({ code: "bad_request", message: "Missing 'audio' file" });
   }
 
+  const quota = await enforceQuota(user);
+  if (quota) return reply.code(429).send({ code: "quota_exceeded", message: quota });
+
   try {
     const personality = await resolvePersonality(user, personalityOverride);
     const result = await runPipeline({ audio, format, targetApp, language, personality });
@@ -234,6 +254,11 @@ app.post("/v1/refine", { config: AUTHED_RL }, async (req, reply) => {
   if (!body.text || !body.text.trim()) {
     return reply.code(400).send({ code: "bad_request", message: "Missing 'text'" });
   }
+  const over = tooLong(body.text);
+  if (over) return reply.code(413).send({ code: "bad_request", message: over });
+
+  const quota = await enforceQuota(user);
+  if (quota) return reply.code(429).send({ code: "quota_exceeded", message: quota });
 
   try {
     const personality = await resolvePersonality(user, body.personality);
@@ -268,6 +293,11 @@ app.post("/v1/draft", { config: AUTHED_RL }, async (req, reply) => {
   if (!body.intent || !body.intent.trim()) {
     return reply.code(400).send({ code: "bad_request", message: "Missing 'intent'" });
   }
+  const tooBig = tooLong(body.intent) ?? tooLong(body.screenContent) ?? tooLong(body.recipient);
+  if (tooBig) return reply.code(413).send({ code: "bad_request", message: tooBig });
+
+  const quota = await enforceQuota(user);
+  if (quota) return reply.code(429).send({ code: "quota_exceeded", message: quota });
 
   try {
     const personality = await resolvePersonality(user, body.personality);
@@ -303,6 +333,11 @@ app.post("/v1/speak", { config: AUTHED_RL }, async (req, reply) => {
   if (!body.text || !body.text.trim()) {
     return reply.code(400).send({ code: "bad_request", message: "Missing 'text'" });
   }
+  const over = tooLong(body.text) ?? tooLong(body.instructions);
+  if (over) return reply.code(413).send({ code: "bad_request", message: over });
+
+  const quota = await enforceQuota(user);
+  if (quota) return reply.code(429).send({ code: "quota_exceeded", message: quota });
 
   try {
     const { audio, contentType } = await synthesize({
@@ -343,6 +378,13 @@ app.put("/v1/personality", { config: AUTHED_RL }, async (req, reply) => {
     return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
   }
   const personality = (req.body ?? {}) as Personality;
+  const over =
+    tooLong(personality.tone) ??
+    tooLong(personality.signature) ??
+    tooLong(personality.customInstructions) ??
+    tooLong(personality.vocabulary) ??
+    tooLong(personality.snippets);
+  if (over) return reply.code(413).send({ code: "bad_request", message: over });
   try {
     await savePersonality(user, personality);
     const res: PersonalityResponse = { personality };
@@ -364,6 +406,12 @@ app.post("/v1/personality/learn", { config: AUTHED_RL }, async (req, reply) => {
   if (!body.sample || !body.sample.trim()) {
     return reply.code(400).send({ code: "bad_request", message: "Missing 'sample'" });
   }
+  const over = tooLong(body.sample);
+  if (over) return reply.code(413).send({ code: "bad_request", message: over });
+
+  const quota = await enforceQuota(user);
+  if (quota) return reply.code(429).send({ code: "quota_exceeded", message: quota });
+
   try {
     const inferred = await inferStyle(body.sample);
     const merged = { ...(await getPersonality(user)), ...inferred };
@@ -492,6 +540,66 @@ function computeUpstreamProviders(): string[] {
   return [...out];
 }
 
+// --- Account: delete everything we hold about a user ------------------------
+//
+// The Settings screen's "Delete account" button fires this. We remove the
+// user's saved personality, profile, and usage_events, then ask Supabase Auth
+// to delete the account itself (requires the service-role key; falls back to a
+// "please email us" message when only the anon key is configured).
+//
+// This is intentionally destructive and irreversible — we don't hold a
+// tombstone. The endpoint returns a small JSON summary of what was deleted so
+// the client can show a receipt.
+
+app.delete("/v1/account", { config: AUTHED_RL }, async (req, reply) => {
+  const user = await resolveUser(req.headers["authorization"]);
+  if (!user) {
+    return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
+  }
+
+  const admin = supabase();
+  const summary = { personality: false, profile: false, usageEvents: 0, authAccount: false };
+
+  if (admin) {
+    // Delete usage rows and application-level tables. Errors are logged but
+    // don't abort the sequence — the user still gets a partial receipt.
+    try {
+      const { count } = await admin
+        .from("usage_events")
+        .delete({ count: "exact" })
+        .eq("user_id", user.id);
+      summary.usageEvents = count ?? 0;
+    } catch (err) { req.log.error({ err }, "delete usage_events"); }
+
+    try {
+      const { error } = await admin.from("personalities").delete().eq("user_id", user.id);
+      summary.personality = !error;
+    } catch (err) { req.log.error({ err }, "delete personalities"); }
+
+    try {
+      const { error } = await admin.from("profiles").delete().eq("user_id", user.id);
+      summary.profile = !error;
+    } catch (err) { req.log.error({ err }, "delete profiles"); }
+
+    // Auth deletion requires the service-role key. When it fails we return a
+    // partial-success message rather than pretending the account is gone.
+    try {
+      const { error } = await admin.auth.admin.deleteUser(user.id);
+      summary.authAccount = !error;
+    } catch (err) {
+      req.log.error({ err }, "delete auth user");
+    }
+  }
+
+  return reply.send({
+    status: summary.authAccount ? "deleted" : "partial",
+    ...summary,
+    message: summary.authAccount
+      ? "Your account and all associated data have been deleted."
+      : "Data removed. To finalize account deletion, email privacy@tailzu.space.",
+  });
+});
+
 // --- Keyboard config (server-driven keyboard; cached by the native shell) ----
 
 app.get("/v1/keyboard/config", { config: UNAUTH_RL }, async (_req, reply) => {
@@ -501,8 +609,16 @@ app.get("/v1/keyboard/config", { config: UNAUTH_RL }, async (_req, reply) => {
 // --- Voice (WebSocket): live streaming --------------------------------------
 
 app.register(async (instance) => {
+  // Same audio ceiling as /v1/transcribe-stream, in bytes. This WS collects
+  // the whole clip in memory before running the batched pipeline, so an
+  // unbounded chunks[] is a real OOM risk.
+  const MAX_STREAM_BYTES = 30 * 1024 * 1024;
+  const IDLE_TIMEOUT_MS = 60_000;
+
   instance.get(WS_PATH, { websocket: true }, (socket, req) => {
-    const send = (msg: ServerMessage) => socket.send(JSON.stringify(msg));
+    const send = (msg: ServerMessage) => {
+      if (socket.readyState === 1) socket.send(JSON.stringify(msg));
+    };
 
     let started = false;
     let format: AudioFormat = "webm";
@@ -510,22 +626,60 @@ app.register(async (instance) => {
     let language: LanguageHint | undefined;
     let personalityOverride: Personality | undefined;
     const chunks: Buffer[] = [];
+    let totalBytes = 0;
     let authedUser: AuthedUser | null = null;
+    let authReady = false;
+    let closed = false;
+    let idleTimer: NodeJS.Timeout | null = null;
+
+    const armIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        send({ type: "error", code: "bad_request", message: "idle timeout" });
+        safeClose();
+      }, IDLE_TIMEOUT_MS);
+    };
+
+    const safeClose = () => {
+      closed = true;
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+      try { socket.close(); } catch { /* ignore */ }
+    };
 
     // Verify auth on connect (header carried through the upgrade request).
-    resolveUser(req.headers["authorization"]).then((user) => {
+    // We DO NOT accept any binary frame until authReady = true — silent-drop
+    // is safer than buffering unbounded audio for an unauthenticated caller.
+    resolveUser(req.headers["authorization"]).then(async (user) => {
       if (!user) {
         send({ type: "error", code: "unauthorized", message: "Missing or invalid token" });
-        socket.close();
+        safeClose();
+        return;
+      }
+      const over = await enforceQuota(user);
+      if (over) {
+        send({ type: "error", code: "quota_exceeded", message: over });
+        safeClose();
         return;
       }
       authedUser = user;
+      authReady = true;
     });
 
     socket.on("message", async (data: Buffer, isBinary: boolean) => {
-      // Binary frame → audio chunk.
+      if (closed) return;
+
+      // Binary frame → audio chunk. Refuse until auth resolved AND client
+      // sent "start"; cap total bytes; reset idle window.
       if (isBinary) {
-        if (started) chunks.push(data);
+        if (!authReady || !started) return; // silent drop
+        totalBytes += data.length;
+        if (totalBytes > MAX_STREAM_BYTES) {
+          send({ type: "error", code: "audio_too_long", message: "stream size cap reached" });
+          safeClose();
+          return;
+        }
+        chunks.push(data);
+        armIdle();
         return;
       }
 
@@ -545,17 +699,21 @@ app.register(async (instance) => {
         language = msg.language;
         personalityOverride = msg.personality;
         send({ type: "ready" });
+        armIdle();
         return;
       }
 
       if (msg.type === "end") {
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
         const user = authedUser;
         if (!user) {
           send({ type: "error", code: "unauthorized", message: "Not authenticated" });
+          safeClose();
           return;
         }
         if (chunks.length === 0) {
           send({ type: "error", code: "bad_request", message: "No audio received" });
+          safeClose();
           return;
         }
         const audio = Buffer.concat(chunks);
@@ -577,10 +735,13 @@ app.register(async (instance) => {
           req.log.error(err);
           send({ type: "error", code: "internal", message: "Pipeline failed" });
         } finally {
-          socket.close();
+          safeClose();
         }
       }
     });
+
+    socket.on("close", () => { closed = true; if (idleTimer) clearTimeout(idleTimer); });
+    socket.on("error", () => { closed = true; if (idleTimer) clearTimeout(idleTimer); });
   });
 });
 

@@ -91,6 +91,17 @@ const EnvSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().default(120),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60_000),
   RATE_LIMIT_UNAUTH_MAX: z.coerce.number().default(20),
+
+  // Input length caps — refuse any request whose text field exceeds this many
+  // characters, so a runaway client can't burn LLM budget on huge inputs. 10k
+  // chars ≈ 2500 tokens ≈ a healthy 2-minute dictation.
+  MAX_TEXT_LENGTH: z.coerce.number().default(10_000),
+
+  // Free-tier ceiling per calendar month. When set (positive number), any
+  // signed-in user who exceeds it is refused with `quota_exceeded` BEFORE the
+  // paid upstream call is made. Unset / 0 = no ceiling.
+  FREE_MONTHLY_AUDIO_SECONDS: z.coerce.number().default(0),
+  FREE_MONTHLY_WORDS: z.coerce.number().default(0),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema> & {

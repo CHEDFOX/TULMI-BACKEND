@@ -7,6 +7,7 @@
  * so the pipeline still runs end-to-end without a database.
  */
 import { dataClientFor, supabase, type AuthedUser } from "../auth/supabase.js";
+import { getConfig } from "../config.js";
 import type { UsageRecord, UsageSummary } from "../../../shared/types/api.js";
 
 export interface MeterInput extends UsageRecord {
@@ -114,8 +115,45 @@ export async function usageWindows(
 }
 
 /**
+ * Pre-flight free-tier check. Returns a human-readable reason string when the
+ * user is over the configured monthly ceiling — the caller should refuse the
+ * request BEFORE calling any paid upstream. Returns null when the user is
+ * inside the limit (or no limit is configured).
+ *
+ * Cheap enough to call on every request path: one indexed query per user per
+ * request, cached at Supabase.
+ */
+export async function enforceQuota(user: AuthedUser): Promise<string | null> {
+  const cfg = getConfig();
+  const capAudio = cfg.FREE_MONTHLY_AUDIO_SECONDS;
+  const capWords = cfg.FREE_MONTHLY_WORDS;
+  if (capAudio <= 0 && capWords <= 0) return null; // no limit configured
+
+  const now = new Date();
+  const monthStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+  ).toISOString();
+  const used = await usageSince(user.id, monthStart);
+  if (!used) return null; // Supabase unavailable → fail open, don't lock users out
+
+  if (capAudio > 0 && used.audioSeconds >= capAudio) {
+    return `Monthly voice cap reached (${Math.round(capAudio / 60)} min). Resets ${monthResetDate()}.`;
+  }
+  if (capWords > 0 && used.words >= capWords) {
+    return `Monthly word cap reached (${capWords}). Resets ${monthResetDate()}.`;
+  }
+  return null;
+}
+
+function monthResetDate(): string {
+  const d = new Date();
+  const next = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
+  return next.toISOString().slice(0, 10);
+}
+
+/**
  * Sum a user's audio-seconds usage since a given ISO timestamp. This is the
- * read side free-tier enforcement will use later (e.g. "minutes this month").
+ * read side free-tier enforcement uses (see enforceQuota).
  */
 export async function usageSince(
   userId: string,

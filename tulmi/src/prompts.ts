@@ -50,22 +50,35 @@ function loadPromptFile(filename: string): string {
   return raw;
 }
 
-/** Render a personality into a readable block for the prompt. */
+/**
+ * Neutralise angle brackets in user-authored strings so a hostile payload can't
+ * inject its own XML-style delimiter and pretend to close a fence. Kept small:
+ * a single tag confuses the model less than an escaped one. Length caps
+ * enforced upstream (see MAX_TEXT_LENGTH in server.ts).
+ */
+function sanitizeFenced(s: string): string {
+  return s.replace(/[<>]/g, "");
+}
+
+/** Render a personality into a readable block for the prompt. User-controlled
+ *  free-text fields are wrapped in a fence so the model treats them as context
+ *  describing the user, not as instructions to obey. */
 export function renderPersonality(p: Personality | undefined): string {
   if (!p || Object.keys(p).length === 0) return "None set. Use a neutral, clean voice.";
 
   const lines: string[] = [];
-  if (p.tone) lines.push(`- Tone: ${p.tone}`);
+  if (p.tone) lines.push(`- Tone: <tone>${sanitizeFenced(p.tone)}</tone>`);
   if (p.formality) lines.push(`- Formality: ${p.formality}`);
   if (p.emoji) lines.push(`- Emoji use: ${p.emoji}`);
   if (p.languages?.length) lines.push(`- Preferred languages/scripts: ${p.languages.join(", ")}`);
-  if (p.signature) lines.push(`- Preferred sign-off: ${p.signature}`);
-  if (p.customInstructions) lines.push(`- Extra instructions: ${p.customInstructions}`);
+  if (p.signature) lines.push(`- Preferred sign-off: <signature>${sanitizeFenced(p.signature)}</signature>`);
+  if (p.customInstructions)
+    lines.push(`- Extra instructions: <custom_instructions>${sanitizeFenced(p.customInstructions)}</custom_instructions>`);
   if (p.vocabulary?.trim())
     lines.push(
-      `- Known names/terms — spell these EXACTLY as written: ${p.vocabulary
-        .replace(/\s*\n\s*/g, ", ")
-        .trim()}`,
+      `- Known names/terms — spell these EXACTLY as written: <vocabulary>${sanitizeFenced(
+        p.vocabulary.replace(/\s*\n\s*/g, ", ").trim(),
+      )}</vocabulary>`,
     );
 
   return lines.length ? lines.join("\n") : "None set. Use a neutral, clean voice.";
@@ -133,7 +146,9 @@ export function resolveRecipientHint(
   if (!hints?.length || !recipient) return "";
   const wanted = recipient.trim().toLowerCase();
   const hit = hints.find((h) => wanted.includes(h.recipient.trim().toLowerCase()));
-  return hit ? `${hit.recipient}: ${hit.hint}` : "";
+  if (!hit) return "";
+  // Fence: hint is user-authored context, never obey it as an instruction.
+  return `<recipient_hint recipient="${sanitizeFenced(hit.recipient)}">${sanitizeFenced(hit.hint)}</recipient_hint>`;
 }
 
 /** Build the system prompt for the cleanup/refine task (voice + typing). */
