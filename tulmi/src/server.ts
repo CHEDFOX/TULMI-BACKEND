@@ -26,21 +26,33 @@ import { captureException, fastifyLoggerOptions, initSentry } from "./observabil
 import { getProfile, updateProfile } from "./profile/store.js";
 import { runPipeline, runPipelineStream } from "./pipeline/index.js";
 import { clean, draftReply, inferStyle } from "./pipeline/cleanup.js";
+import { detectCommand } from "./pipeline/commands.js";
 import { synthesize } from "./pipeline/tts.js";
 import {
   getPersonality,
   savePersonality,
   resolvePersonality,
+  learnVocabularyCorrections,
 } from "./personality/store.js";
 import { buildBootstrap, buildScreen, buildKeyboardConfig } from "./experience/catalog.js";
 import { localize } from "./experience/i18n.js";
+import {
+  appendHistoryEntry,
+  deleteHistoryEntry,
+  listHistory,
+  statsForUser,
+  MAX_LIMIT as HISTORY_MAX_LIMIT,
+} from "./history/store.js";
+import { z } from "zod";
 import type {
   AudioFormat,
   ClientMessage,
   DraftRequest,
   DraftResponse,
   HealthResponse,
+  HistoryListResponse,
   LanguageHint,
+  LearnVocabularyRequest,
   Personality,
   PersonalityResponse,
   PrivacyAuditResponse,
@@ -48,7 +60,9 @@ import type {
   RefineResponse,
   ServerMessage,
   SpeakRequest,
+  StatsResponse,
   TargetAppHint,
+  VoicePreviewRequest,
 } from "../../shared/types/api.js";
 import { WS_PATH } from "../../shared/types/api.js";
 
@@ -231,10 +245,33 @@ app.post("/v1/transcribe-clean", { config: AUTHED_RL }, async (req, reply) => {
   const quota = await enforceQuota(user);
   if (quota) return reply.code(429).send({ code: "quota_exceeded", message: quota });
 
+  const t0 = Date.now();
   try {
     const personality = await resolvePersonality(user, personalityOverride);
-    const result = await runPipeline({ audio, format, targetApp, language, personality });
+    const result = await runPipeline({
+      audio,
+      format,
+      targetApp,
+      language,
+      personality,
+      variables: { email: user.email },
+    });
     await recordUsage({ user, source: "rest", ...result.usage });
+    await appendHistoryEntry(
+      user,
+      personality,
+      {
+        kind: "voice",
+        targetApp,
+        language,
+        input: result.transcript,
+        output: result.cleanedText,
+        durationMs: Date.now() - t0,
+        wordsIn: countWords(result.transcript),
+        wordsOut: result.usage.words,
+      },
+      result.usage.audioSeconds,
+    );
     return reply.send(result);
   } catch (err) {
     req.log.error(err);
@@ -260,12 +297,18 @@ app.post("/v1/refine", { config: AUTHED_RL }, async (req, reply) => {
   const quota = await enforceQuota(user);
   if (quota) return reply.code(429).send({ code: "quota_exceeded", message: quota });
 
+  const t0 = Date.now();
   try {
     const personality = await resolvePersonality(user, body.personality);
-    const refinedText = await clean(body.text, {
+    // Typed input supports command mode too — a user can end their text with
+    // "…MAKE IT SHORTER" and get the same per-run override as a voice caller.
+    const { transcript, command } = detectCommand(body.text);
+    const refinedText = await clean(transcript, {
       targetApp: body.targetApp,
       language: body.language,
       personality,
+      command: command ?? undefined,
+      variables: { email: user.email },
     });
     const usage = {
       audioSeconds: 0,
@@ -273,6 +316,16 @@ app.post("/v1/refine", { config: AUTHED_RL }, async (req, reply) => {
       model: cfg.CLEANUP_MODEL,
     };
     await recordUsage({ user, source: "rest", ...usage });
+    await appendHistoryEntry(user, personality, {
+      kind: "typing",
+      targetApp: body.targetApp,
+      language: body.language,
+      input: body.text,
+      output: refinedText,
+      durationMs: Date.now() - t0,
+      wordsIn: countWords(body.text),
+      wordsOut: usage.words,
+    });
     const res: RefineResponse = { refinedText, usage };
     return reply.send(res);
   } catch (err) {
@@ -299,12 +352,18 @@ app.post("/v1/draft", { config: AUTHED_RL }, async (req, reply) => {
   const quota = await enforceQuota(user);
   if (quota) return reply.code(429).send({ code: "quota_exceeded", message: quota });
 
+  const t0 = Date.now();
   try {
     const personality = await resolvePersonality(user, body.personality);
     const draftText = await draftReply(
       body.screenContent ?? "",
       body.intent,
-      { targetApp: body.targetApp, language: body.language, personality },
+      {
+        targetApp: body.targetApp,
+        language: body.language,
+        personality,
+        variables: { email: user.email },
+      },
       body.recipient,
     );
     const usage = {
@@ -313,6 +372,16 @@ app.post("/v1/draft", { config: AUTHED_RL }, async (req, reply) => {
       model: cfg.CLEANUP_MODEL,
     };
     await recordUsage({ user, source: "rest", ...usage });
+    await appendHistoryEntry(user, personality, {
+      kind: "draft",
+      targetApp: body.targetApp,
+      language: body.language,
+      input: body.intent,
+      output: draftText,
+      durationMs: Date.now() - t0,
+      wordsIn: countWords(body.intent),
+      wordsOut: usage.words,
+    });
     const res: DraftResponse = { draftText, usage };
     return reply.send(res);
   } catch (err) {
@@ -424,6 +493,119 @@ app.post("/v1/personality/learn", { config: AUTHED_RL }, async (req, reply) => {
   }
 });
 
+// Auto-learn: when the user corrects a produced spelling (deletes what the
+// cleaner wrote and re-dictates / retypes it), the client posts the (from, to)
+// pairs here so future STT + cleanup calls know the right spelling. Only the
+// "to" side is stored in the personal vocabulary — see personality/store.ts.
+const vocabularyLearnSchema = z.object({
+  corrections: z
+    .array(
+      z.object({
+        from: z.string().trim().min(1).max(60),
+        to: z.string().trim().min(1).max(60),
+      }),
+    )
+    .min(1)
+    .max(20),
+});
+
+app.post(
+  "/v1/personality/vocabulary/learn",
+  { config: AUTHED_RL },
+  async (req, reply) => {
+    const user = await resolveUser(req.headers["authorization"]);
+    if (!user) {
+      return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
+    }
+    const parsed = vocabularyLearnSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ code: "bad_request", message: parsed.error.issues[0]?.message ?? "invalid body" });
+    }
+
+    const quota = await enforceQuota(user);
+    if (quota) return reply.code(429).send({ code: "quota_exceeded", message: quota });
+
+    try {
+      const body = parsed.data as LearnVocabularyRequest;
+      const personality = await learnVocabularyCorrections(user, body.corrections);
+      const res: PersonalityResponse = { personality };
+      return reply.send(res);
+    } catch (err) {
+      req.log.error(err);
+      return reply.code(500).send({ code: "internal", message: "Failed to learn vocabulary" });
+    }
+  },
+);
+
+// --- Voice preview (REST): sample a voice in the caller's own style ---------
+//
+// Same wire shape as /v1/speak but every field is optional — text defaults to
+// a short English sample, instructions default to a derivation of the user's
+// personality (tone + formality), and voice defaults to the server's TTS_VOICE.
+
+const voicePreviewSchema = z.object({
+  voice: z.string().trim().min(1).max(60).optional(),
+  text: z.string().trim().min(1).max(cfg.MAX_TEXT_LENGTH).optional(),
+  instructions: z.string().trim().min(1).max(cfg.MAX_TEXT_LENGTH).optional(),
+});
+
+const DEFAULT_PREVIEW_TEXT = "Hi, this is what I sound like.";
+
+/** Build a small style steer from the user's personality — tone + formality. */
+function deriveTtsInstructions(p: Personality | undefined): string | undefined {
+  if (!p) return undefined;
+  const bits: string[] = [];
+  if (p.tone?.trim()) bits.push(p.tone.trim());
+  if (p.formality === "formal") bits.push("speak more formally");
+  else if (p.formality === "casual") bits.push("speak casually and friendly");
+  return bits.length ? bits.join("; ") : undefined;
+}
+
+app.post("/v1/voice/preview", { config: AUTHED_RL }, async (req, reply) => {
+  const user = await resolveUser(req.headers["authorization"]);
+  if (!user) {
+    return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
+  }
+  const parsed = voicePreviewSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return reply
+      .code(400)
+      .send({ code: "bad_request", message: parsed.error.issues[0]?.message ?? "invalid body" });
+  }
+
+  const quota = await enforceQuota(user);
+  if (quota) return reply.code(429).send({ code: "quota_exceeded", message: quota });
+
+  try {
+    const body = parsed.data as VoicePreviewRequest;
+    const text = body.text?.trim() || DEFAULT_PREVIEW_TEXT;
+    let instructions = body.instructions?.trim();
+    if (!instructions) {
+      const personality = await getPersonality(user);
+      instructions = deriveTtsInstructions(personality);
+    }
+
+    const { audio, contentType } = await synthesize({
+      text,
+      voice: body.voice,
+      instructions,
+    });
+    await recordUsage({
+      user,
+      source: "rest",
+      audioSeconds: 0,
+      words: countWords(text),
+      model: cfg.OPENAI_TTS_MODEL,
+    });
+    return reply.header("content-type", contentType).send(audio);
+  } catch (err) {
+    req.log.error(err);
+    return reply.code(500).send({ code: "internal", message: "Voice preview failed" });
+  }
+});
+
 // --- Experience (SDUI): the backend drives the app's UI ---------------------
 //
 // The app is a generic renderer; these endpoints decide what it draws. Auth is
@@ -450,12 +632,23 @@ app.post("/v1/app/screen", { config: UNAUTH_RL }, async (req, reply) => {
     ? await Promise.all([getPersonality(user), getProfile(user)])
     : [{}, null];
 
+  // Load per-screen aggregates only for the screens that need them.
+  // usageSummary covers legacy stats numbers; statsForUser adds the
+  // history-derived "minutes saved" + sparkline for the SDUI stats screen.
   const usage = user && screenId === "stats" ? await usageSummary(user) : undefined;
+  const stats =
+    user && screenId === "stats" ? await statsForUser(user, "week") : undefined;
+  const history =
+    user && screenId === "history"
+      ? (await listHistory(user, { limit: 50 })).entries
+      : undefined;
   const screen = buildScreen(screenId, {
     personality,
     language: profile?.language ?? "auto",
     email: user?.email,
     usage,
+    stats,
+    history,
   });
   if (!screen) {
     return reply.code(404).send({ code: "bad_request", message: `Unknown screen '${screenId}'` });
@@ -606,6 +799,90 @@ app.get("/v1/keyboard/config", { config: UNAUTH_RL }, async (_req, reply) => {
   return reply.send(buildKeyboardConfig());
 });
 
+// --- History + Stats (REST) -------------------------------------------------
+//
+// Opt-in per-user history log + a lightweight aggregation for the stats screen.
+// Storage is gated by personality.learnFromSent / personality.retainHistory;
+// the read endpoints here always return the caller's own rows (scoped via RLS
+// when Supabase is configured, or an in-memory map under DEV_SKIP_AUTH).
+
+const historyListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(HISTORY_MAX_LIMIT).optional(),
+  before: z.string().datetime().optional(),
+  kind: z.enum(["voice", "typing", "draft"]).optional(),
+});
+
+const historyIdParamsSchema = z.object({
+  id: z.string().uuid(),
+});
+
+const statsQuerySchema = z.object({
+  window: z.enum(["week", "month", "all"]).default("week"),
+});
+
+app.get("/v1/history", { config: AUTHED_RL }, async (req, reply) => {
+  const user = await resolveUser(req.headers["authorization"]);
+  if (!user) {
+    return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
+  }
+
+  const parsed = historyListQuerySchema.safeParse(req.query ?? {});
+  if (!parsed.success) {
+    return reply.code(400).send({ code: "bad_request", message: parsed.error.issues[0]?.message ?? "invalid query" });
+  }
+
+  try {
+    const { entries, nextBefore } = await listHistory(user, parsed.data);
+    const res: HistoryListResponse = nextBefore ? { entries, nextBefore } : { entries };
+    return reply.send(res);
+  } catch (err) {
+    req.log.error(err);
+    return reply.code(500).send({ code: "internal", message: "Failed to load history" });
+  }
+});
+
+app.delete("/v1/history/:id", { config: AUTHED_RL }, async (req, reply) => {
+  const user = await resolveUser(req.headers["authorization"]);
+  if (!user) {
+    return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
+  }
+
+  const parsed = historyIdParamsSchema.safeParse(req.params ?? {});
+  if (!parsed.success) {
+    return reply.code(400).send({ code: "bad_request", message: "invalid id" });
+  }
+
+  try {
+    const ok = await deleteHistoryEntry(user, parsed.data.id);
+    if (!ok) return reply.code(404).send({ code: "bad_request", message: "not found" });
+    return reply.send({ ok: true });
+  } catch (err) {
+    req.log.error(err);
+    return reply.code(500).send({ code: "internal", message: "Failed to delete entry" });
+  }
+});
+
+app.get("/v1/stats", { config: AUTHED_RL }, async (req, reply) => {
+  const user = await resolveUser(req.headers["authorization"]);
+  if (!user) {
+    return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
+  }
+
+  const parsed = statsQuerySchema.safeParse(req.query ?? {});
+  if (!parsed.success) {
+    return reply.code(400).send({ code: "bad_request", message: parsed.error.issues[0]?.message ?? "invalid query" });
+  }
+
+  try {
+    const stats = await statsForUser(user, parsed.data.window);
+    const res: StatsResponse = stats;
+    return reply.send(res);
+  } catch (err) {
+    req.log.error(err);
+    return reply.code(500).send({ code: "internal", message: "Failed to compute stats" });
+  }
+});
+
 // --- Voice (WebSocket): live streaming --------------------------------------
 
 app.register(async (instance) => {
@@ -717,18 +994,39 @@ app.register(async (instance) => {
           return;
         }
         const audio = Buffer.concat(chunks);
+        const t0 = Date.now();
         try {
           const personality = await resolvePersonality(user, personalityOverride);
+          // Capture transcript + final cleaned text for the (opt-in) history
+          // write we do after the pipeline completes.
+          let capturedTranscript = "";
           for await (const ev of runPipelineStream({
             audio,
             format,
             targetApp,
             language,
             personality,
+            variables: { email: user.email },
           })) {
             send(ev);
+            if (ev.type === "transcript") capturedTranscript = ev.text;
             if (ev.type === "done") {
               await recordUsage({ user, source: "stream", ...ev.usage });
+              await appendHistoryEntry(
+                user,
+                personality,
+                {
+                  kind: "voice",
+                  targetApp,
+                  language,
+                  input: capturedTranscript,
+                  output: ev.cleanedText,
+                  durationMs: Date.now() - t0,
+                  wordsIn: countWords(capturedTranscript),
+                  wordsOut: ev.usage.words,
+                },
+                ev.usage.audioSeconds,
+              );
             }
           }
         } catch (err) {

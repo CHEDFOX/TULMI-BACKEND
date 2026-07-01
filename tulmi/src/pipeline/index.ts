@@ -7,6 +7,7 @@
  */
 import { transcribe } from "./stt.js";
 import { clean, cleanStream } from "./cleanup.js";
+import { detectCommand } from "./commands.js";
 import type {
   AudioFormat,
   CleanupOptions,
@@ -37,10 +38,14 @@ export async function runPipeline(
   const { audio, format, ...opts } = input;
 
   const stt = await transcribe({ audio, format, language: opts.language, vocabulary: opts.personality?.vocabulary });
-  const cleanedText = await clean(stt.text, opts);
+  // Detect trailing "…make it shorter"-style command; strip it from the raw
+  // transcript so the LLM never sees the command as content, and pass the
+  // detected command through as a per-run cleanup override.
+  const { transcript, command } = detectCommand(stt.text);
+  const cleanedText = await clean(transcript, { ...opts, command: command ?? opts.command });
 
   return {
-    transcript: stt.text,
+    transcript,
     cleanedText,
     usage: {
       audioSeconds: stt.durationSeconds,
@@ -68,10 +73,11 @@ export async function* runPipelineStream(
   const { audio, format, ...opts } = input;
 
   const stt = await transcribe({ audio, format, language: opts.language, vocabulary: opts.personality?.vocabulary });
-  yield { type: "transcript", text: stt.text };
+  const { transcript, command } = detectCommand(stt.text);
+  yield { type: "transcript", text: transcript };
 
   let cleanedText = "";
-  for await (const delta of cleanStream(stt.text, opts)) {
+  for await (const delta of cleanStream(transcript, { ...opts, command: command ?? opts.command })) {
     cleanedText += delta;
     yield { type: "cleaned_delta", text: delta };
   }

@@ -159,7 +159,35 @@ export interface Personality {
    * "review my last dictation") can be opted into.
    */
   retainAudio?: boolean;
+
+  /**
+   * Explicit consent for the backend to keep a per-request history log
+   * (input transcript/text + cleaned output) so the user can browse and
+   * re-use their past cleanups. Default: unset → treat as false. Distinct
+   * from `learnFromSent`: learning uses runs to improve the personality;
+   * `retainHistory` just keeps the receipts. Either flag being true is
+   * enough to enable history storage.
+   */
+  retainHistory?: boolean;
 }
+
+/**
+ * "Command mode" — a trailing verbal (or typed) instruction the user tacks
+ * on to alter the cleanup for this one run. E.g. "…MAKE IT SHORTER".
+ *
+ * See pipeline/commands.ts for the detector; the transcript minus the command
+ * is what gets cleaned, and the command shapes the cleanup prompt as an
+ * ephemeral, "for this run only" override that never touches saved personality.
+ */
+export type Command =
+  | { kind: "shorter" }
+  | { kind: "longer" }
+  | { kind: "formal" }
+  | { kind: "casual" }
+  | { kind: "translate"; lang: string }
+  | { kind: "bulletpoints" }
+  | { kind: "emojiOff" }
+  | { kind: "emojiOn" };
 
 /** Options that shape a request (shared by voice, typing, and screen modes). */
 export interface CleanupOptions {
@@ -172,6 +200,21 @@ export interface CleanupOptions {
    * user's saved personality (resolved from their account).
    */
   personality?: Personality;
+  /**
+   * One-shot command override detected from the tail of the input
+   * (e.g. "…make it shorter"). Applied as an addendum to the cleanup prompt
+   * for THIS run only — never persisted, never merged into personality.
+   */
+  command?: Command;
+  /**
+   * Values the snippet expander can interpolate into user snippets — e.g.
+   * `sig = — {name}` becomes `— Alex` when variables.name === "Alex". Every
+   * field is optional; unset variables resolve to an empty string.
+   */
+  variables?: {
+    name?: string;
+    email?: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +347,24 @@ export interface SpeakRequest {
 }
 
 // ---------------------------------------------------------------------------
+// REST: voice preview  (POST /v1/voice/preview)
+// ---------------------------------------------------------------------------
+//
+// Play a short sample so the user can hear what a voice sounds like BEFORE
+// they pick it in Settings. Same shape/output as /v1/speak (binary audio) —
+// text and instructions default sensibly when omitted so the caller can just
+// pass { voice: "nova" } and get a preview.
+
+export interface VoicePreviewRequest {
+  /** Voice name to preview. Defaults to the server's TTS_VOICE. */
+  voice?: string;
+  /** Text to speak. Defaults to a short English sample. */
+  text?: string;
+  /** Style steer. Defaults to a derivation from the user's personality. */
+  instructions?: string;
+}
+
+// ---------------------------------------------------------------------------
 // REST: personality  (GET/PUT /v1/personality)
 // ---------------------------------------------------------------------------
 //
@@ -312,6 +373,29 @@ export interface SpeakRequest {
 
 export interface PersonalityResponse {
   personality: Personality;
+}
+
+// ---------------------------------------------------------------------------
+// REST: auto-learn vocabulary  (POST /v1/personality/vocabulary/learn)
+// ---------------------------------------------------------------------------
+//
+// The keyboard/app calls this when it detects the user has corrected an
+// output (deleted a produced word/phrase and typed a different spelling for
+// the same term). The server appends the corrected "to" spelling to the
+// personal vocabulary so future STT + cleanup runs bias toward it.
+//
+// Body is a small array of corrections. Anything over a per-request cap is
+// rejected — this is a helper, not an import path.
+
+export interface VocabularyCorrection {
+  /** What the cleaner produced (or the wrong spelling to REPLACE from). */
+  from: string;
+  /** What the user meant (the CORRECT spelling to LEARN). */
+  to: string;
+}
+
+export interface LearnVocabularyRequest {
+  corrections: VocabularyCorrection[];
 }
 
 // ---------------------------------------------------------------------------
@@ -356,4 +440,72 @@ export interface PrivacyAuditResponse {
    * Freeform links the app renders as chips ("Read policy", "Delete my data").
    */
   links: Array<{ label: string; url: string }>;
+}
+
+// ---------------------------------------------------------------------------
+// REST: cleanup history  (GET/DELETE /v1/history)
+// ---------------------------------------------------------------------------
+//
+// Opt-in per-user log of past cleanups. Storage is only performed when the
+// user has consented via personality.learnFromSent === true OR
+// personality.retainHistory === true. Reads and writes are always scoped to
+// the caller. Rows are soft-deleted via a server-side deleted_at column and
+// hidden from list/read responses.
+
+/** One row in a user's cleanup history. */
+export interface HistoryEntry {
+  /** Server-generated UUID for the row. */
+  id: string;
+  /** Which surface produced this entry. */
+  kind: "voice" | "typing" | "draft";
+  /** Target app the cleanup was tuned for, when known. */
+  targetApp?: TargetAppHint;
+  /** Language hint that was in effect. */
+  language?: LanguageHint;
+  /** Raw input: transcript (for voice) or typed text (for typing/draft). */
+  input: string;
+  /** Cleaned / drafted output shown to the user. */
+  output: string;
+  /** Total pipeline time for this cleanup, in milliseconds. */
+  durationMs?: number;
+  /** Word count of the input. */
+  wordsIn?: number;
+  /** Word count of the output. */
+  wordsOut?: number;
+  /** ISO-8601 timestamp of when the row was created. */
+  createdAt: string;
+}
+
+/** GET /v1/history response. */
+export interface HistoryListResponse {
+  entries: HistoryEntry[];
+  /**
+   * ISO-8601 cursor for the next page — pass back as `?before=` on the next
+   * request to fetch older entries. Absent when there are no more rows.
+   */
+  nextBefore?: string;
+}
+
+/** GET /v1/stats response. */
+export interface StatsResponse {
+  /** Which rolling window this response covers. */
+  window: "week" | "month" | "all";
+  /** Total request count in the window. */
+  requests: number;
+  /** Total cleaned-output word count in the window. */
+  wordsOut: number;
+  /** Total audio seconds processed in the window. */
+  audioSeconds: number;
+  /**
+   * Rough "minutes saved" estimate, computed on the server as
+   * (wordsOut * TYPING_TIME_PER_WORD) / 60. See history/store.ts for the
+   * constant.
+   */
+  minutesSaved: number;
+  /**
+   * Per-day counts (requests) for a sparkline. The array is ordered oldest→
+   * newest, has length = window's day count (7/30/…, capped for "all"), and
+   * is bucketed by UTC calendar day.
+   */
+  sparklinePerDay: number[];
 }

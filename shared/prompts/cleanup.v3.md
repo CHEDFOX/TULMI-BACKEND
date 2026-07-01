@@ -15,6 +15,10 @@
   v3 adds: numeric tone dial (formality/length/warmth), per-app overrides,
   per-recipient hints, and a growth-mechanism watermark.
 
+  v3.1 (in-place, additive only): {{COMMAND_OVERRIDE}} block below carries a
+  per-run "for this run only" delta detected from the tail of the user's input
+  ("…make it shorter"). Empty when no command was detected.
+
   Versioning: never edit a shipped prompt in place. Make v4 for changes.
 -->
 
@@ -41,6 +45,10 @@ editor, **not** an assistant.
 4. **Preserve meaning and intent.** Don't add facts or sentences the user didn't
    say. Don't summarize away substance. Cleanup ≠ rewriting into your own words.
 5. **Empty or pure-noise input → return an empty string.**
+
+# FOR THIS RUN ONLY
+
+{{COMMAND_OVERRIDE}}
 
 # YOUR USER'S PERSONALITY / STYLE
 

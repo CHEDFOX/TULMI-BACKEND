@@ -17,7 +17,7 @@ import type {
   ThemeTokens,
 } from "../../../shared/types/sdui.js";
 import { SDUI_SCHEMA_VERSION } from "../../../shared/types/sdui.js";
-import type { Personality, UsageSummary } from "../../../shared/types/api.js";
+import type { HistoryEntry, Personality, StatsResponse, UsageSummary } from "../../../shared/types/api.js";
 
 // --- Global theme -----------------------------------------------------------
 
@@ -82,6 +82,27 @@ export function buildBootstrap(opts: { onboarded?: boolean } = {}): BootstrapRes
       "onboarding.title": "Welcome To Tailzu",
       "onboarding.subtitle": "Speak Or Type Rough — Tailzu Makes It Sound Like You.",
       "onboarding.cta": "Get Started",
+
+      // Stats screen (see statsScreen). Kept as label refs so localisation
+      // controls copy without redeploying the backend.
+      "stats.title": "Your usage",
+      "stats.hero.subtitle": "This month, in your voice",
+      "stats.kv.weekWords": "Words this week",
+      "stats.kv.audio": "Audio dictated",
+      "stats.kv.saved": "Minutes saved",
+      "stats.effort.template":
+        "Your effort: you'd have spent {minutes} minutes typing what Tulmi cleaned up in seconds.",
+      "stats.sparkline.label": "Requests, last 30 days",
+      "stats.cta.history": "See history",
+
+      // History screen (see historyScreen).
+      "history.title": "History",
+      "history.subtitle":
+        "Every cleanup you've kept, newest first. Tap for details, long-press to remove.",
+      "history.empty":
+        "No history yet. Turn on 'Keep history' in your personality to start collecting your cleanups.",
+      "history.detail.toast": "Detail view coming soon",
+      "history.delete.error": "Couldn't reach history. Try again.",
     },
     languages: [
       { code: "en", name: "English", greeting: "Hello", regions: ["US","GB","CA","AU","IN"] },
@@ -134,6 +155,15 @@ export interface ScreenContext {
   language: string;
   email?: string;
   usage?: UsageSummary;
+  /**
+   * Optional per-user stats projection for the "stats" screen. Populated by
+   * the screen route handler when it has been wired to fetch statsForUser();
+   * when absent, the stats screen falls back to the numbers in `usage`.
+   */
+  stats?: StatsResponse;
+  /** Pre-fetched history for the "history" screen (optional; the screen also
+   * refetches via callEndpoint on mount for freshness). */
+  history?: HistoryEntry[];
   name?: string;
   dictionary?: Array<{ word: string; replacement: string }>;
   frequentWords?: string[];
@@ -156,7 +186,9 @@ export function buildScreen(screenId: string, ctx: ScreenContext): ScreenRespons
     case "settings":
       return settingsScreen(ctx);
     case "stats":
-      return statsScreen(ctx.usage);
+      return statsScreen(ctx);
+    case "history":
+      return historyScreen(ctx);
     case "onboarding":
       return onboardingWelcome();
     case "onboarding_language":
@@ -454,60 +486,240 @@ function settingsScreen(ctx: ScreenContext): ScreenResponse {
   };
 }
 
-/** Server-rendered usage stats (numbers fetched in the screen route). */
-function statsScreen(usage?: UsageSummary): ScreenResponse {
-  const u = usage ?? { month: { words: 0, audioSeconds: 0, requests: 0 }, total: { words: 0, audioSeconds: 0, requests: 0 } };
+/**
+ * Server-rendered usage stats screen. Prefers a fresh StatsResponse
+ * (`ctx.stats`) when the screen route provides one, otherwise degrades to
+ * the aggregate UsageSummary that /v1/app/screen already knows how to fetch.
+ * The screen itself does no client-side fetching — see the "history" screen
+ * below for the opposite pattern.
+ */
+function statsScreen(ctx: ScreenContext): ScreenResponse {
+  const usage = ctx.usage ?? {
+    month: { words: 0, audioSeconds: 0, requests: 0 },
+    total: { words: 0, audioSeconds: 0, requests: 0 },
+  };
+  const stats = ctx.stats;
   const mins = (s: number) => Math.round(s / 60);
-  const saved = Math.max(0, Math.round(u.total.words / 40 - u.total.audioSeconds / 60));
-  const card = (value: string, caption: string): Node => ({
-    type: "Card",
-    style: { flex: 1, alignItems: "center" },
-    children: [
-      { type: "Heading", props: { content: value }, style: { fontSize: 26, marginBottom: 2 } },
-      { type: "Text", props: { content: caption, variant: "label" }, style: { textAlign: "center" } },
-    ],
+
+  // Weekly words: prefer the explicit stats projection; else derive from the
+  // monthly aggregate as a rough seven-day proxy. Not perfect, but the number
+  // still reads as "your recent activity" rather than a phantom placeholder.
+  const wordsWeek = stats?.window === "week"
+    ? stats.wordsOut
+    : Math.round(usage.month.words / 4);
+  const wordsMonth = usage.month.words;
+  const audioSecondsMonth = usage.month.audioSeconds;
+  // Same 40 wpm baseline the /v1/stats endpoint uses (see history/store.ts).
+  const minutesSaved = stats?.minutesSaved ?? Math.max(0, Math.round(usage.total.words / 40));
+  const typingMinutes = Math.max(1, Math.round(usage.total.words / 40));
+
+  // NOTE: we render the sparkline as a small Unicode bar chart in a plain
+  // Text node because the client renderer doesn't ship a Chart component yet.
+  // Replace this with a real ChartLine node once the app registry gains one.
+  const sparklineText = renderSparkline(stats?.sparklinePerDay);
+
+  const kv = (label: string, value: string): Node => ({
+    type: "KeyValue",
+    props: { label, value },
+    style: { flex: 1 },
   });
+
   return {
     schemaVersion: SDUI_SCHEMA_VERSION,
     screenId: "stats",
     title: "Your usage",
     state: {},
+    actions: {
+      openHistory: { kind: "navigate", screenId: "history" },
+    },
     root: {
       type: "Screen",
       children: [
-        { type: "Overline", props: { content: "Your usage" } },
-        text("This month", "h1"),
-        spacer(12),
+        {
+          type: "Hero",
+          props: {
+            title: wordsMonth.toLocaleString() + " words",
+            subtitle: "This month, in your voice",
+          },
+        },
+        spacer(20),
         {
           type: "Stack",
           style: { direction: "row", gap: 8 },
           children: [
-            card(u.month.words.toLocaleString(), "Words"),
-            card(String(mins(u.month.audioSeconds)), "Minutes dictated"),
-            card(u.month.requests.toLocaleString(), "Requests"),
+            kv("Words this week", wordsWeek.toLocaleString()),
+            kv("Audio dictated", `${mins(audioSecondsMonth)} min`),
+            kv("Minutes saved", `${minutesSaved.toLocaleString()}`),
           ],
         },
-        spacer(16),
+        spacer(20),
+        {
+          type: "Paragraph",
+          props: {
+            content:
+              `Your effort: you'd have spent ${typingMinutes.toLocaleString()} minutes typing ` +
+              `what Tulmi cleaned up in seconds.`,
+          },
+        },
+        spacer(24),
+        // Sparkline block — Text-only until the renderer ships a chart node.
+        text("Requests, last 30 days", "label"),
+        spacer(6),
         {
           type: "Card",
           children: [
-            text("≈ " + saved.toLocaleString() + " min", "h1"),
-            text("Estimated typing time saved, all-time", "label"),
+            text(sparklineText, "body", { style: { fontSize: 22, letterSpacing: 2 } }),
           ],
         },
-        spacer(20),
-        { type: "Divider" },
-        spacer(20),
-        text("All time", "label"),
-        spacer(8),
+        spacer(24),
         {
-          type: "Stack",
-          style: { direction: "row", gap: 8 },
-          children: [
-            card(u.total.words.toLocaleString(), "Words"),
-            card(String(mins(u.total.audioSeconds)), "Minutes"),
-            card(u.total.requests.toLocaleString(), "Requests"),
-          ],
+          type: "Button",
+          props: { label: "See history", variant: "secondary" },
+          on: { onPress: "openHistory" },
+        },
+      ],
+    },
+    cacheTtlSeconds: 0,
+  };
+}
+
+/**
+ * Render a request-per-day series as a compact Unicode block-chart. The input
+ * is normalised to the eight-glyph ramp below; missing/empty input renders as
+ * a neutral flat baseline so the screen never looks broken.
+ */
+function renderSparkline(series: number[] | undefined): string {
+  const glyphs = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+  const s = series && series.length > 0 ? series : [0, 0, 0, 0, 0, 0, 0];
+  const max = Math.max(1, ...s);
+  return s
+    .map((v) => {
+      const idx = Math.max(0, Math.min(glyphs.length - 1, Math.round((v / max) * (glyphs.length - 1))));
+      return glyphs[idx];
+    })
+    .join("");
+}
+
+/**
+ * History browser. Loads the caller's opt-in cleanup history via /v1/history
+ * and renders each row as a Card. Rows tap into a placeholder toast until we
+ * ship a full-fat detail screen; long-press soft-deletes via /v1/history/:id.
+ */
+function historyScreen(ctx: ScreenContext): ScreenResponse {
+  return {
+    schemaVersion: SDUI_SCHEMA_VERSION,
+    screenId: "history",
+    title: "History",
+    state: {
+      entries: ctx.history ?? [],
+      loading: false,
+    },
+    actions: {
+      // Called on mount + after a delete succeeds — a single source of truth
+      // for "get the freshest list" keeps the UI honest.
+      refresh: {
+        kind: "sequence",
+        actions: [
+          { kind: "setState", path: "loading", value: true },
+          {
+            kind: "callEndpoint",
+            method: "GET",
+            path: "/v1/history",
+            assignTo: "entries",
+            onSuccess: "refreshDone",
+            onError: "err",
+          },
+        ],
+      },
+      refreshDone: { kind: "setState", path: "loading", value: false },
+      // Tap on a card — detail view is intentionally deferred until we know
+      // what belongs there beyond input/output/timestamp.
+      openDetail: { kind: "toast", message: "Detail view coming soon", tone: "info" },
+      // Long-press on a card — the row template resolves the entry id via a
+      // "$item.id" placeholder that the renderer expands per row.
+      deleteEntry: {
+        kind: "sequence",
+        actions: [
+          {
+            kind: "callEndpoint",
+            method: "DELETE",
+            path: "/v1/history/$item.id",
+            onSuccess: "refresh",
+            onError: "err",
+          },
+          { kind: "haptic", style: "success" },
+        ],
+      },
+      err: { kind: "toast", message: "Couldn't reach history. Try again.", tone: "error" },
+    },
+    root: {
+      type: "Screen",
+      children: [
+        {
+          type: "Heading",
+          props: { content: "History" },
+          style: { fontSize: 30, fontWeight: "800", color: "$color.text", marginBottom: 6 },
+        },
+        {
+          type: "Paragraph",
+          props: {
+            content:
+              "Every cleanup you've kept, newest first. Tap for details, long-press to remove.",
+          },
+          style: { marginBottom: 20 },
+        },
+        { type: "ProgressBar", visibleIf: { truthy: "loading" } },
+        {
+          type: "List",
+          bind: { items: "entries" },
+          on: {
+            onAppear: "refresh",
+            onRefresh: "refresh",
+          },
+          props: {
+            emptyLabel:
+              "No history yet. Turn on 'Keep history' in your personality to start collecting your cleanups.",
+            itemTemplate: {
+              type: "Card",
+              style: { marginBottom: 10 },
+              on: {
+                onPress: "openDetail",
+                onLongPress: "deleteEntry",
+              },
+              children: [
+                {
+                  type: "Stack",
+                  style: { direction: "row", justify: "between", align: "center" },
+                  children: [
+                    {
+                      type: "Text",
+                      bind: { content: "$item.createdAt" },
+                      props: { variant: "label" },
+                    },
+                    {
+                      type: "Badge",
+                      bind: { label: "$item.targetApp" },
+                      props: { tone: "accent" },
+                      visibleIf: { truthy: "$item.targetApp" },
+                    },
+                  ],
+                },
+                { type: "Spacer", style: { height: 6 } },
+                {
+                  type: "Text",
+                  bind: { content: "$item.input" },
+                  props: { variant: "muted", numberOfLines: 2 },
+                },
+                { type: "Spacer", style: { height: 6 } },
+                {
+                  type: "Text",
+                  bind: { content: "$item.output" },
+                  props: { variant: "body", numberOfLines: 3 },
+                  style: { fontWeight: "700", color: "$color.text" },
+                },
+              ],
+            },
+          },
         },
       ],
     },

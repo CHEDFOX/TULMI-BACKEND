@@ -12,6 +12,7 @@ import { getConfig } from "./config.js";
 import type {
   AppStyle,
   CleanupOptions,
+  Command,
   Personality,
   RecipientHint,
   ToneDial,
@@ -151,6 +152,37 @@ export function resolveRecipientHint(
   return `<recipient_hint recipient="${sanitizeFenced(hit.recipient)}">${sanitizeFenced(hit.hint)}</recipient_hint>`;
 }
 
+/**
+ * Turn a command-mode override into a short prompt addendum. Emits
+ * "None." when no command is present so the section reads cleanly.
+ * Kept intentionally small — we WANT the LLM to still honor personality,
+ * app tone, etc.; commands are a delta, not a replacement.
+ */
+export function renderCommandOverride(command: Command | undefined): string {
+  if (!command) return "None.";
+  switch (command.kind) {
+    case "shorter":
+      return "The user asked to make this output SHORTER than the natural length. Trim clauses aggressively; keep meaning intact; no filler.";
+    case "longer":
+      return "The user asked to make this output LONGER — expand sentences into their fuller natural form, without adding facts the user didn't say.";
+    case "formal":
+      return "The user asked for a MORE FORMAL tone in this run — use full words (no contractions), no slang, no emoji, and structured punctuation. Overrides the tone dial for this run.";
+    case "casual":
+      return "The user asked for a MORE CASUAL tone in this run — conversational, contractions ok, warm and human. Overrides the tone dial for this run.";
+    case "translate": {
+      // Sanitize captured language to defang injection: 40 chars, no angle brackets.
+      const lang = sanitizeFenced(command.lang).slice(0, 40) || "the requested language";
+      return `The user asked to TRANSLATE the output into ${lang}. Produce the cleaned text IN ${lang} only. If the source is in a different script, use ${lang}'s script.`;
+    }
+    case "bulletpoints":
+      return "The user asked for the output to be formatted as a BULLETED LIST. Break the cleaned content into short bullets; keep each bullet self-contained.";
+    case "emojiOff":
+      return "The user asked for NO EMOJI in this run — override any personality/app-style emoji setting and produce zero emoji.";
+    case "emojiOn":
+      return "The user asked to ADD EMOJI in this run — sprinkle a couple of tasteful emojis where they fit the meaning naturally. Don't overdo it.";
+  }
+}
+
 /** Build the system prompt for the cleanup/refine task (voice + typing). */
 export function buildCleanupSystem(opts: CleanupOptions): string {
   const version = getConfig().CLEANUP_PROMPT_VERSION;
@@ -163,6 +195,7 @@ export function buildCleanupSystem(opts: CleanupOptions): string {
     .replaceAll("{{TONE_DIAL}}", renderToneDial(opts.personality?.dial))
     .replaceAll("{{APP_STYLE}}", renderAppStyle(appStyle))
     .replaceAll("{{RECIPIENT_HINT}}", "") // cleanup path has no recipient
+    .replaceAll("{{COMMAND_OVERRIDE}}", renderCommandOverride(opts.command))
     .replaceAll("{{WATERMARK}}", opts.personality?.watermark ? "on" : "off");
 }
 

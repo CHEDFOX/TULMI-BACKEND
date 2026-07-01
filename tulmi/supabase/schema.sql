@@ -97,3 +97,68 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- ---------------------------------------------------------------------
+-- cleanup_history — opt-in append-only log of a user's cleanups
+-- (voice/typing/draft), with a soft-delete via deleted_at. Storage is
+-- gated by the caller — the backend only inserts when the user has
+-- consented via personality.learnFromSent or personality.retainHistory.
+-- ---------------------------------------------------------------------
+create table if not exists public.cleanup_history (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references auth.users (id) on delete cascade,
+  kind         text not null check (kind in ('voice', 'typing', 'draft')),
+  target_app   text,
+  language     text,
+  input        text not null,
+  output       text not null,
+  duration_ms  integer,
+  words_in     integer,
+  words_out    integer,
+  deleted_at   timestamptz,
+  created_at   timestamptz not null default now()
+);
+
+create index if not exists cleanup_history_user_created_idx
+  on public.cleanup_history (user_id, created_at desc);
+
+create index if not exists cleanup_history_user_live_idx
+  on public.cleanup_history (user_id, created_at desc)
+  where deleted_at is null;
+
+alter table public.cleanup_history enable row level security;
+
+drop policy if exists "users read own history" on public.cleanup_history;
+create policy "users read own history"
+  on public.cleanup_history for select
+  using (auth.uid() = user_id and deleted_at is null);
+
+drop policy if exists "users insert own history" on public.cleanup_history;
+create policy "users insert own history"
+  on public.cleanup_history for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists "users soft-delete own history" on public.cleanup_history;
+create policy "users soft-delete own history"
+  on public.cleanup_history for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create or replace function public.cleanup_history_no_edit()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.input       is distinct from old.input       then raise exception 'cleanup_history.input is immutable'; end if;
+  if new.output      is distinct from old.output      then raise exception 'cleanup_history.output is immutable'; end if;
+  if new.kind        is distinct from old.kind        then raise exception 'cleanup_history.kind is immutable'; end if;
+  if new.user_id     is distinct from old.user_id     then raise exception 'cleanup_history.user_id is immutable'; end if;
+  if new.created_at  is distinct from old.created_at  then raise exception 'cleanup_history.created_at is immutable'; end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists cleanup_history_no_edit_trg on public.cleanup_history;
+create trigger cleanup_history_no_edit_trg
+  before update on public.cleanup_history
+  for each row execute function public.cleanup_history_no_edit();
