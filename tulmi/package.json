@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:pipeline": "tsx scripts/test-pipeline.ts"
+    "test:pipeline": "tsx scripts/test-pipeline.ts",
+    "smoke": "tsx scripts/smoke.ts"
   },
   "dependencies": {
     "@deepgram/sdk": "^4.11.3",
