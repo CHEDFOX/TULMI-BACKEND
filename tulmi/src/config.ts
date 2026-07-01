@@ -47,8 +47,11 @@ const EnvSchema = z.object({
   DEEPGRAM_API_KEY: z.string().optional(),
 
   // OpenRouter (cleanup) — required to run the pipeline.
+  // Model slug follows OpenRouter's naming: "<vendor>/<model>". Swap this via
+  // env (CLEANUP_MODEL=...) without a code change. Current default is picked
+  // for a good speed × quality × price balance for short cleanup / drafting.
   OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required"),
-  CLEANUP_MODEL: z.string().default("anthropic/claude-haiku-4.5"),
+  CLEANUP_MODEL: z.string().default("openai/gpt-5.4-mini"),
   OPENROUTER_APP_URL: z.string().default("https://tulmi.local"),
   OPENROUTER_APP_NAME: z.string().default("Tulmi"),
 
