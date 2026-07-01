@@ -59,9 +59,53 @@ export interface UsageSummary {
 }
 
 /**
+ * Three continuous style dials (0–100). Continuous instead of enum so the
+ * keyboard can offer a slider that Actually Feels Like a slider, and so we can
+ * A/B different midpoints without a shape change.
+ *
+ *   formality: 0 = "yo" / 100 = "Dear Sir/Madam"
+ *   length:    0 = terse / 100 = generous, spelled-out
+ *   warmth:    0 = matter-of-fact / 100 = warm, personable
+ */
+export interface ToneDial {
+  formality?: number;
+  length?: number;
+  warmth?: number;
+}
+
+/**
+ * Per-target-app style override — the tone dial + emoji policy that should
+ * apply when the user writes into this app specifically. Everything is optional;
+ * unset fields inherit the top-level Personality. Sparse by design so an app
+ * like "Slack" can override only formality without changing warmth.
+ */
+export interface AppStyle {
+  dial?: ToneDial;
+  formality?: "casual" | "neutral" | "formal";
+  emoji?: "none" | "minimal" | "expressive";
+  /** Free-form addendum for this app, e.g. "always thread-friendly". */
+  note?: string;
+}
+
+/**
+ * Per-recipient hint — a plain-language note the user writes about a specific
+ * contact ("my mom", "boss@work"). Non-normative — the LLM uses it as advice,
+ * not a rule. Kept as a small list so the prompt stays finite.
+ */
+export interface RecipientHint {
+  /** Free-form identifier (name, handle, or address). Compared verbatim. */
+  recipient: string;
+  /** e.g. "very close friend, keep it low-effort and funny". */
+  hint: string;
+}
+
+/**
  * The user's personality / style profile. Set once in the app, stored in the
  * backend, and applied to every output so the text sounds like *them*. The app
  * may also pass an inline override per request.
+ *
+ * Legacy fields (tone/formality/emoji) still work — new fields (dial/appStyles/
+ * recipientHints/watermark/learnFromSent) are additive and layer on top.
  */
 export interface Personality {
   /** Free-text description of voice, e.g. "warm, concise, a little witty". */
@@ -83,6 +127,38 @@ export interface Personality {
   /** Text-expansion shortcuts, one per line as "trigger = expansion". The
    * cleanup step expands each trigger into its full text. */
   snippets?: string;
+
+  // --- Style dials + per-context overrides (v2 additions) --------------------
+
+  /** Continuous style dials — see ToneDial. Overrides `formality` when set. */
+  dial?: ToneDial;
+  /** Per-target-app overrides (e.g. { WhatsApp: { dial: { formality: 10 } } }). */
+  appStyles?: Record<string, AppStyle>;
+  /** Small list of per-contact hints applied when `recipient` matches. */
+  recipientHints?: RecipientHint[];
+
+  // --- Consent + trust flags -------------------------------------------------
+
+  /**
+   * If true, appends " · Tailzu" (or the localised equivalent) after outputs.
+   * Opt-in growth mechanism — users get "sent with Tailzu" attribution.
+   */
+  watermark?: boolean;
+
+  /**
+   * Explicit consent for the backend to use recent outputs to improve the
+   * user's saved style. If false, cleanup runs are single-shot and forgotten.
+   * Default: unset → treat as false. Never inferred from anything else.
+   */
+  learnFromSent?: boolean;
+
+  /**
+   * Explicit consent for the backend to keep raw audio beyond the STT call.
+   * Default: unset → treat as false. Today the backend deletes audio right
+   * after the STT call regardless; this flag exists so a future feature (e.g.
+   * "review my last dictation") can be opted into.
+   */
+  retainAudio?: boolean;
 }
 
 /** Options that shape a request (shared by voice, typing, and screen modes). */
@@ -246,4 +322,38 @@ export interface HealthResponse {
   status: "ok";
   service: "tulmi-backend";
   version: string;
+}
+
+// ---------------------------------------------------------------------------
+// REST: privacy audit  (GET /v1/privacy/audit)
+// ---------------------------------------------------------------------------
+//
+// The "receipts" endpoint — feeds the in-app Privacy screen so a user can see
+// exactly what happened with their data over a window. Nothing new is stored;
+// this is a projection of the existing metering.
+
+export interface PrivacyAuditWindow {
+  /** ISO window label ("last24h", "last7d", "last30d", "allTime"). */
+  window: string;
+  /** Total number of requests we processed for this user in this window. */
+  requests: number;
+  /** Seconds of audio processed. Deleted after transcription (retentionSeconds=0). */
+  audioSeconds: number;
+  /** Word count of cleaned output shown to the user. */
+  words: number;
+}
+
+export interface PrivacyAuditResponse {
+  /** Per-window usage counts. */
+  windows: PrivacyAuditWindow[];
+  /** True if long-term audio retention is on for this account. Default false. */
+  audioRetained: boolean;
+  /** True if the backend uses the user's runs to improve their style. */
+  learningFromRuns: boolean;
+  /** SaaS providers your text/audio has been sent to in this window. */
+  upstreamProviders: string[];
+  /**
+   * Freeform links the app renders as chips ("Read policy", "Delete my data").
+   */
+  links: Array<{ label: string; url: string }>;
 }

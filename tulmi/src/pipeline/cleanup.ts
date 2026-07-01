@@ -138,7 +138,8 @@ export async function inferStyle(sample: string): Promise<Partial<Personality>> 
     "formality ('casual' | 'neutral' | 'formal'), " +
     "emoji ('none' | 'minimal' | 'expressive'), " +
     "signature (a sign-off they use, or omit it), " +
-    "customInstructions (concrete style rules you observed, e.g. 'lowercase, few commas, no exclamation marks'). " +
+    "customInstructions (concrete style rules you observed, e.g. 'lowercase, few commas, no exclamation marks'), " +
+    "dial (an object { formality: 0-100, length: 0-100, warmth: 0-100 } — omit any dial you can't confidently read from the sample). " +
     "No prose, no markdown, no extra keys.";
   const res = await openrouter().chat.completions.create({
     model: getConfig().CLEANUP_MODEL,
@@ -170,5 +171,20 @@ function sanitizeStyle(o: Record<string, unknown>): Partial<Personality> {
   if (sig) out.signature = sig;
   const ci = str(o.customInstructions, 500);
   if (ci) out.customInstructions = ci;
+  // Tone dial (v3): each dial is optional; only include ones the model gave
+  // us as a number, and clamp to 0-100.
+  if (o.dial && typeof o.dial === "object") {
+    const d = o.dial as Record<string, unknown>;
+    const clamp01 = (v: unknown) =>
+      typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : undefined;
+    const dial: NonNullable<Personality["dial"]> = {};
+    const f = clamp01(d.formality);
+    const l = clamp01(d.length);
+    const w = clamp01(d.warmth);
+    if (f != null) dial.formality = f;
+    if (l != null) dial.length = l;
+    if (w != null) dial.warmth = w;
+    if (Object.keys(dial).length) out.dial = dial;
+  }
   return out;
 }

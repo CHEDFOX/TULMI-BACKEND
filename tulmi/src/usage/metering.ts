@@ -69,6 +69,51 @@ export async function usageSummary(user: AuthedUser): Promise<UsageSummary> {
 }
 
 /**
+ * Windowed usage projection for the Privacy audit endpoint. Reads the same
+ * usage_events rows and buckets them into fixed windows: 24h / 7d / 30d /
+ * all-time. When Supabase is disabled all counts come back as zero (the caller
+ * still gets a valid PrivacyAuditResponse shape).
+ */
+export async function usageWindows(
+  user: AuthedUser,
+): Promise<Array<{ window: string; requests: number; audioSeconds: number; words: number }>> {
+  const buckets = [
+    { window: "last24h", sinceMs: 24 * 60 * 60 * 1000 },
+    { window: "last7d", sinceMs: 7 * 24 * 60 * 60 * 1000 },
+    { window: "last30d", sinceMs: 30 * 24 * 60 * 60 * 1000 },
+    { window: "allTime", sinceMs: Number.POSITIVE_INFINITY },
+  ];
+  const empty = () =>
+    buckets.map((b) => ({ window: b.window, requests: 0, audioSeconds: 0, words: 0 }));
+
+  const sb = dataClientFor(user);
+  if (!sb) return empty();
+
+  const { data, error } = await sb
+    .from("usage_events")
+    .select("audio_seconds, word_count, created_at")
+    .eq("user_id", user.id);
+  if (error || !data) return empty();
+
+  const now = Date.now();
+  const out = empty();
+  for (const r of data as Array<{ audio_seconds?: number; word_count?: number; created_at?: string }>) {
+    const ts = r.created_at ? Date.parse(r.created_at) : NaN;
+    const age = Number.isFinite(ts) ? now - ts : Number.POSITIVE_INFINITY;
+    const a = r.audio_seconds ?? 0;
+    const w = r.word_count ?? 0;
+    for (let i = 0; i < buckets.length; i++) {
+      if (age <= buckets[i]!.sinceMs) {
+        out[i]!.audioSeconds += a;
+        out[i]!.words += w;
+        out[i]!.requests += 1;
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Sum a user's audio-seconds usage since a given ISO timestamp. This is the
  * read side free-tier enforcement will use later (e.g. "minutes this month").
  */

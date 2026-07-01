@@ -20,7 +20,8 @@ import websocket from "@fastify/websocket";
 import transcribeStream from "./routes/transcribe-stream.js";
 import { getConfig, VERSION } from "./config.js";
 import { resolveUser, type AuthedUser } from "./auth/supabase.js";
-import { recordUsage, usageSummary } from "./usage/metering.js";
+import { recordUsage, usageSummary, usageWindows } from "./usage/metering.js";
+import { captureException, fastifyLoggerOptions, initSentry } from "./observability.js";
 import { getProfile, updateProfile } from "./profile/store.js";
 import { runPipeline, runPipelineStream } from "./pipeline/index.js";
 import { clean, draftReply, inferStyle } from "./pipeline/cleanup.js";
@@ -41,6 +42,7 @@ import type {
   LanguageHint,
   Personality,
   PersonalityResponse,
+  PrivacyAuditResponse,
   RefineRequest,
   RefineResponse,
   ServerMessage,
@@ -51,9 +53,23 @@ import { WS_PATH } from "../../shared/types/api.js";
 
 const cfg = getConfig();
 
+// Sentry — opt-in via SENTRY_DSN. Awaited so error hooks are registered
+// before Fastify starts accepting traffic.
+await initSentry();
+
 const app = Fastify({
-  logger: true,
+  // Redact Authorization/api-key headers out of every log line + trim the
+  // request serializer so large multipart bodies never enter the log. See
+  // observability.fastifyLoggerOptions() for the redaction list.
+  logger: fastifyLoggerOptions(),
   bodyLimit: 50 * 1024 * 1024, // 50 MB — generous ceiling for an audio clip
+});
+
+// Route unhandled errors through the observability layer (Sentry when
+// configured, console otherwise) — Fastify's default error handler still runs
+// after and formats the JSON response, this only tees the event.
+app.addHook("onError", async (req, _reply, err) => {
+  captureException(err, { route: req.routeOptions?.url, method: req.method });
 });
 
 await app.register(multipart, {
@@ -425,6 +441,56 @@ app.put("/v1/profile", { config: AUTHED_RL }, async (req, reply) => {
     return reply.code(500).send({ code: "internal", message: "Failed to save profile" });
   }
 });
+
+// --- Privacy audit (receipts screen) ----------------------------------------
+//
+// Feeds the in-app "Data & Privacy" screen. Nothing new is stored — this is
+// just a projection of usage_events + the user's stated consent flags.
+// Purpose: give users a concrete, honest answer to "what have you done with
+// my stuff". Auditability, not marketing copy.
+
+app.get("/v1/privacy/audit", { config: AUTHED_RL }, async (req, reply) => {
+  const user = await resolveUser(req.headers["authorization"]);
+  if (!user) {
+    return reply.code(401).send({ code: "unauthorized", message: "Missing or invalid token" });
+  }
+  const [windows, personality] = await Promise.all([
+    usageWindows(user),
+    getPersonality(user),
+  ]);
+  const res: PrivacyAuditResponse = {
+    windows,
+    // Backend today deletes audio after the STT call regardless of the flag,
+    // so this reports the flag's *stated intent* honestly (false unless the
+    // user has opted in). Do not toggle to true until server-side retention
+    // is actually implemented — a mislabelled "false" is safer than a false "true".
+    audioRetained: personality.retainAudio === true,
+    learningFromRuns: personality.learnFromSent === true,
+    upstreamProviders: computeUpstreamProviders(),
+    links: [
+      { label: "Read policy", url: "https://tailzu.space/privacy" },
+      { label: "Contact support", url: "mailto:support@tailzu.space" },
+      { label: "Delete my data", url: "mailto:privacy@tailzu.space?subject=Delete%20my%20data" },
+    ],
+  };
+  return reply.send(res);
+});
+
+/**
+ * Which SaaS providers your text/audio may have gone to under the current
+ * server configuration. Derived from env — the "delete provider X" toggle
+ * (env change) automatically drops it from this list, so the audit stays
+ * honest without a code push.
+ */
+function computeUpstreamProviders(): string[] {
+  const out = new Set<string>();
+  if (cfg.STT_PROVIDER === "openai" || cfg.OPENAI_API_KEY) out.add("OpenAI");
+  if (cfg.STT_PROVIDER === "groq" || cfg.GROQ_API_KEY) out.add("Groq");
+  if (cfg.DEEPGRAM_API_KEY) out.add("Deepgram");
+  if (cfg.OPENROUTER_API_KEY) out.add("OpenRouter (cleanup LLM)");
+  if (cfg.SUPABASE_URL) out.add("Supabase (auth + metering only)");
+  return [...out];
+}
 
 // --- Keyboard config (server-driven keyboard; cached by the native shell) ----
 

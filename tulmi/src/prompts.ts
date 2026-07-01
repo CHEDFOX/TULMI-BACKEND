@@ -9,12 +9,18 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { getConfig } from "./config.js";
-import type { CleanupOptions, Personality } from "../../shared/types/api.js";
+import type {
+  AppStyle,
+  CleanupOptions,
+  Personality,
+  RecipientHint,
+  ToneDial,
+} from "../../shared/types/api.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cache = new Map<string, string>();
 
-/** Read a prompt file (e.g. "cleanup.v2.md") from shared/prompts/, cached. */
+/** Read a prompt file (e.g. "cleanup.v3.md") from shared/prompts/, cached. */
 function loadPromptFile(filename: string): string {
   const cached = cache.get(filename);
   if (cached) return cached;
@@ -65,21 +71,99 @@ export function renderPersonality(p: Personality | undefined): string {
   return lines.length ? lines.join("\n") : "None set. Use a neutral, clean voice.";
 }
 
+/**
+ * Turn the numeric ToneDial into a compact block the LLM can read. Renders
+ * "Default." when the user hasn't set any dials, so the prompt stays clean
+ * for the majority of users who never touch them.
+ */
+export function renderToneDial(d: ToneDial | undefined): string {
+  if (!d) return "Default.";
+  const bits: string[] = [];
+  const push = (name: string, v: number | undefined) => {
+    if (v == null) return;
+    const clamped = Math.max(0, Math.min(100, Math.round(v)));
+    bits.push(`- ${name}: ${clamped}`);
+  };
+  push("formality", d.formality);
+  push("length", d.length);
+  push("warmth", d.warmth);
+  return bits.length ? bits.join("\n") : "Default.";
+}
+
+/**
+ * Resolve which app style to apply for a target app. `appStyles` keys are
+ * matched case-insensitively so "whatsapp" and "WhatsApp" behave the same;
+ * a "Generic" or "*" key acts as a fallback when no specific match exists.
+ */
+export function resolveAppStyle(
+  appStyles: Personality["appStyles"],
+  targetApp: string | undefined,
+): AppStyle | undefined {
+  if (!appStyles || !targetApp) return appStyles?.["*"] ?? appStyles?.["Generic"];
+  const wanted = targetApp.trim().toLowerCase();
+  for (const [k, v] of Object.entries(appStyles)) {
+    if (k.trim().toLowerCase() === wanted) return v;
+  }
+  return appStyles["*"] ?? appStyles["Generic"];
+}
+
+/** Render an app style override into a small block; "" when nothing applies. */
+export function renderAppStyle(style: AppStyle | undefined): string {
+  if (!style) return "";
+  const lines: string[] = ["For this app:"];
+  if (style.formality) lines.push(`- Formality (override): ${style.formality}`);
+  if (style.emoji) lines.push(`- Emoji use (override): ${style.emoji}`);
+  if (style.dial) {
+    const d = renderToneDial(style.dial);
+    if (d !== "Default.") lines.push(`- Tone dial (override):\n${d.replace(/^/gm, "  ")}`);
+  }
+  if (style.note) lines.push(`- Note: ${style.note}`);
+  return lines.length > 1 ? lines.join("\n") : "";
+}
+
+/**
+ * Pick a recipient hint that matches the passed `recipient` (case-insensitive
+ * substring). Returns "" when no match — the prompt renders it verbatim so
+ * empty means "no extra context".
+ */
+export function resolveRecipientHint(
+  hints: RecipientHint[] | undefined,
+  recipient: string | undefined,
+): string {
+  if (!hints?.length || !recipient) return "";
+  const wanted = recipient.trim().toLowerCase();
+  const hit = hints.find((h) => wanted.includes(h.recipient.trim().toLowerCase()));
+  return hit ? `${hit.recipient}: ${hit.hint}` : "";
+}
+
 /** Build the system prompt for the cleanup/refine task (voice + typing). */
 export function buildCleanupSystem(opts: CleanupOptions): string {
   const version = getConfig().CLEANUP_PROMPT_VERSION;
+  const targetApp = opts.targetApp?.trim() || "Generic";
+  const appStyle = resolveAppStyle(opts.personality?.appStyles, targetApp);
   return loadPromptFile(`cleanup.${version}.md`)
-    .replaceAll("{{TARGET_APP}}", opts.targetApp?.trim() || "Generic")
+    .replaceAll("{{TARGET_APP}}", targetApp)
     .replaceAll("{{LANGUAGE}}", opts.language ?? "auto")
-    .replaceAll("{{PERSONALITY}}", renderPersonality(opts.personality));
+    .replaceAll("{{PERSONALITY}}", renderPersonality(opts.personality))
+    .replaceAll("{{TONE_DIAL}}", renderToneDial(opts.personality?.dial))
+    .replaceAll("{{APP_STYLE}}", renderAppStyle(appStyle))
+    .replaceAll("{{RECIPIENT_HINT}}", "") // cleanup path has no recipient
+    .replaceAll("{{WATERMARK}}", opts.personality?.watermark ? "on" : "off");
 }
 
 /** Build the system prompt for the screen-reply drafting task. */
 export function buildReplySystem(opts: CleanupOptions, recipient?: string): string {
   const version = getConfig().REPLY_PROMPT_VERSION;
+  const targetApp = opts.targetApp?.trim() || "Generic";
+  const appStyle = resolveAppStyle(opts.personality?.appStyles, targetApp);
+  const recipientHint = resolveRecipientHint(opts.personality?.recipientHints, recipient);
   return loadPromptFile(`reply.${version}.md`)
-    .replaceAll("{{TARGET_APP}}", opts.targetApp?.trim() || "Generic")
+    .replaceAll("{{TARGET_APP}}", targetApp)
     .replaceAll("{{LANGUAGE}}", opts.language ?? "auto")
     .replaceAll("{{PERSONALITY}}", renderPersonality(opts.personality))
-    .replaceAll("{{RECIPIENT}}", recipient?.trim() || "Unknown");
+    .replaceAll("{{TONE_DIAL}}", renderToneDial(opts.personality?.dial))
+    .replaceAll("{{APP_STYLE}}", renderAppStyle(appStyle))
+    .replaceAll("{{RECIPIENT}}", recipient?.trim() || "Unknown")
+    .replaceAll("{{RECIPIENT_HINT}}", recipientHint)
+    .replaceAll("{{WATERMARK}}", opts.personality?.watermark ? "on" : "off");
 }

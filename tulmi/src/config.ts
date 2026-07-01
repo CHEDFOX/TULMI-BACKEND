@@ -75,9 +75,17 @@ const EnvSchema = z.object({
   // (load tests, smoke checks). Off by default — see the boot-time refusal.
   DEV_SKIP_AUTH_ALLOW_PROD: bool(false),
 
-  // Prompt versions to load from shared/prompts/.
-  CLEANUP_PROMPT_VERSION: z.string().default("v2"),
-  REPLY_PROMPT_VERSION: z.string().default("v1"),
+  // Prompt versions to load from shared/prompts/. v3 (cleanup) / v2 (reply)
+  // add the tone dial + per-app overrides + watermark. Roll back by exporting
+  // CLEANUP_PROMPT_VERSION=v2 / REPLY_PROMPT_VERSION=v1 without a code change.
+  CLEANUP_PROMPT_VERSION: z.string().default("v3"),
+  REPLY_PROMPT_VERSION: z.string().default("v2"),
+
+  // Sentry (backend). Optional — the observability layer no-ops when unset,
+  // so the value can safely stay empty in dev.
+  SENTRY_DSN: z.string().optional(),
+  SENTRY_ENVIRONMENT: z.string().default("production"),
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().default(0.05),
 
   // Rate limiting (per IP / per Authorization header).
   RATE_LIMIT_MAX: z.coerce.number().default(120),
