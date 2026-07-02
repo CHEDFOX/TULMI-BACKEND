@@ -91,6 +91,10 @@ const app = Fastify({
   // observability.fastifyLoggerOptions() for the redaction list.
   logger: fastifyLoggerOptions(),
   bodyLimit: 50 * 1024 * 1024, // 50 MB — generous ceiling for an audio clip
+  // Trust the reverse proxy (Nginx / Caddy) so `req.ip` reports the real
+  // client IP from X-Forwarded-For rather than 127.0.0.1. Without this every
+  // caller shares the same rate-limit bucket — a single burst 429s everyone.
+  trustProxy: true,
 });
 
 // Route unhandled errors through the observability layer (Sentry when
@@ -633,7 +637,13 @@ function noStoreSdui(reply: import("fastify").FastifyReply): void {
   reply.header("X-Cache-Version", currentCacheVersion());
 }
 
-app.post("/v1/app/bootstrap", { config: UNAUTH_RL }, async (req, reply) => {
+// SDUI endpoints intentionally use the AUTHED_RL tier even though the routes
+// themselves are auth-optional. Reason: a normal launch fires bootstrap +
+// several screens back-to-back (4–6 requests), which trips the 20/min unauth
+// cap almost immediately. The keyGenerator differentiates keys per-user via
+// the token hash, so a real authed user gets their own bucket; anonymous
+// callers still share by IP (real IP now, thanks to trustProxy).
+app.post("/v1/app/bootstrap", { config: AUTHED_RL }, async (req, reply) => {
   noStoreSdui(reply);
   // Auth is optional here so the shell can boot; when present, the user's
   // profile decides whether onboarding still needs to run.
@@ -643,7 +653,7 @@ app.post("/v1/app/bootstrap", { config: UNAUTH_RL }, async (req, reply) => {
   return reply.send(await localize(bootstrap, profile?.language ?? "en"));
 });
 
-app.post("/v1/app/screen", { config: UNAUTH_RL }, async (req, reply) => {
+app.post("/v1/app/screen", { config: AUTHED_RL }, async (req, reply) => {
   noStoreSdui(reply);
   const body = (req.body ?? {}) as { screenId?: string };
   const screenId = body.screenId;
