@@ -655,13 +655,17 @@ function replyScreen(): ScreenResponse {
 /** Settings — server-driven app info, account, language, and links. */
 function settingsScreen(ctx: ScreenContext): ScreenResponse {
   const current = LANGUAGES.find((l) => l.value === ctx.language)?.label ?? "Auto";
-  // Row helper attaches a Button fallback so old TestFlight bundles (which
-  // don't know the "Row" node type) still render each Settings item as a
-  // tappable button. Without the fallback the entire Settings body renders
-  // as null on old bundles — that was the "empty Settings" bug in the field.
+  // Row helper attaches a Button-styled-as-row fallback so old bundles that
+  // lack the "Row" component still render each Settings item as a full-width
+  // tappable strip, not a pill. Uses only v1 primitives (Button + style
+  // overrides) which the shipped bundle understands.
   const row = (label: string, action: ActionRef, extra: Partial<Node> = {}): Node => {
     const extraProps = (extra.props as Record<string, unknown> | undefined) ?? {};
     const danger = extraProps.danger === true;
+    const value = extraProps.value as string | undefined;
+    // Use the value in the label if present (v1 Button only shows props.label,
+    // not a separate value slot). Wraps the label to avoid missing context.
+    const rowLabel = value ? `${label}    ${value}` : label;
     return {
       type: "Row",
       props: { label },
@@ -670,11 +674,21 @@ function settingsScreen(ctx: ScreenContext): ScreenResponse {
       fallback: {
         type: "Button",
         props: {
-          label,
+          label: rowLabel,
           variant: danger ? "danger" : "secondary",
         },
         on: { onPress: action },
-        style: { marginBottom: 8 },
+        // Style the button to read as a full-width row with a hairline
+        // divider below — closer to iOS list rows than a pill.
+        style: {
+          width: "100%",
+          borderRadius: 0,
+          paddingVertical: 16,
+          paddingHorizontal: 8,
+          borderBottomWidth: 1,
+          borderColor: "rgba(255,255,255,0.06)",
+          backgroundColor: "transparent",
+        },
       },
     };
   };
