@@ -882,25 +882,70 @@ function onboardingKeyboard(): ScreenResponse {
     state: { keyboardReady: false }, // the app overwrites this live
     actions: {
       openSettings: { kind: "openSettings", target: "keyboard" },
-      finish: { kind: "sequence", actions: [
-        { kind: "callEndpoint", method: "PUT", path: "/v1/profile", body: { onboarded: true } },
-        { kind: "haptic", style: "success" },
-        { kind: "switchTab", tabId: "home" },
-      ] },
+      // Split the finish flow so `switchTab` only runs after the PUT succeeds.
+      // Previously the write was fire-and-forget: any network blip / 401 / 5xx
+      // was swallowed and the user still visually "completed" onboarding,
+      // producing the "home tab + onboarding content" loop on next launch.
+      finish: {
+        kind: "callEndpoint",
+        method: "PUT",
+        path: "/v1/profile",
+        body: { onboarded: true },
+        onSuccess: "finishOk",
+        onError: "finishErr",
+      },
+      finishOk: {
+        kind: "sequence",
+        actions: [
+          { kind: "haptic", style: "success" },
+          { kind: "switchTab", tabId: "home" },
+        ],
+      },
+      finishErr: {
+        kind: "toast",
+        tone: "error",
+        message: "Couldn't finish setup. Check your connection and try again.",
+      },
+      // Escape hatch — user can skip onboarding even if `keyboardReady` never
+      // flips true (e.g. the iOS keyboard extension isn't installed on this
+      // build, or Full Access can't be detected). Same server confirmation as
+      // finish, so the flag actually persists.
+      skip: {
+        kind: "callEndpoint",
+        method: "PUT",
+        path: "/v1/profile",
+        body: { onboarded: true },
+        onSuccess: "finishOk",
+        onError: "finishErr",
+      },
     },
     blocks: [
+      // Full iOS path — Apple does NOT allow deep-linking into Settings >
+      // Keyboards, so the button below can only land the user on the app's
+      // own Settings page. Show every step so they can navigate manually.
       { type: "Card", children: [
-        step("1", "Open Settings and add the Tailzu keyboard."),
-        { type: "Spacer", style: { height: 14 } },
-        step("2", "Turn on “Allow Full Access”."),
-        { type: "Spacer", style: { height: 14 } },
-        step("3", "Tap the 🌐 globe to switch to Tailzu once."),
+        step("1", "Open Settings, then tap General."),
+        { type: "Spacer", style: { height: 12 } },
+        step("2", "Tap Keyboard → Keyboards → Add New Keyboard."),
+        { type: "Spacer", style: { height: 12 } },
+        step("3", "Choose Tailzu from the list."),
+        { type: "Spacer", style: { height: 12 } },
+        step("4", "Tap Tailzu again and turn on “Allow Full Access”."),
+        { type: "Spacer", style: { height: 12 } },
+        step("5", "Return to Tailzu — the 🌐 globe key switches between keyboards."),
       ] },
       { type: "Spacer", style: { height: 28 } },
+      // "Open Settings" (not "Open Keyboard Settings") — iOS can't deliver
+      // what the old label promised; be honest about where the button lands.
       { type: "Button", visibleIf: { not: { truthy: "keyboardReady" } },
-        props: { label: "Open Keyboard Settings", variant: "primary" }, on: { onPress: "openSettings" } },
+        props: { label: "Open Settings", variant: "primary" }, on: { onPress: "openSettings" } },
       { type: "Button", visibleIf: { truthy: "keyboardReady" },
         props: { label: "Start Using Tailzu", variant: "primary" }, on: { onPress: "finish" } },
+      { type: "Spacer", style: { height: 14 } },
+      // Ghost / text-only "Skip" so users aren't trapped if they can't or
+      // won't add the keyboard right now.
+      { type: "Button", visibleIf: { not: { truthy: "keyboardReady" } },
+        props: { label: "Skip for now", variant: "secondary" }, on: { onPress: "skip" } },
     ],
     cacheTtlSeconds: 0,
   };
