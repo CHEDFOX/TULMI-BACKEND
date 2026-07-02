@@ -973,11 +973,16 @@ export function buildKeyboardConfig(): KeyboardConfigResponse {
   return {
     schemaVersion: SDUI_SCHEMA_VERSION,
     theme: {
-      background: THEME.color.bg,
-      key: THEME.color.inputBg,
-      keyText: THEME.color.text,
-      accent: THEME.color.primary,
-      keyPressed: THEME.color.surface,
+      // Colors are HEX ONLY — the native keyboards (Swift + Kotlin) parse
+      // "#RRGGBB", not rgba() / hsl() / theme tokens. Previously we mirrored
+      // the SDUI THEME which uses rgba() for text, so keyText fell back to a
+      // dim default on the extension side and the keys were essentially the
+      // same colour as the background (#0e0e12 vs #000).
+      background: "#000000",
+      key: "#2a2a2e",           // Apple-like medium-dark grey, clearly visible
+      keyText: "#FFFFFF",       // solid hex — no rgba, no fallback
+      accent: "#ff6b1f",        // brand orange — return + refine call-to-action
+      keyPressed: "#3a3a40",    // brighter tap-highlight (modern iOS convention)
     },
     layouts: [
       {
@@ -1000,6 +1005,8 @@ export function buildKeyboardConfig(): KeyboardConfigResponse {
       return: "return",
       needFullAccess: "Enable Full Access to use voice + Refine.",
     },
-    cacheTtlSeconds: 600,
+    // Was 600 (10 min). A live theme fix couldn't reach users mid-session.
+    // 60 s keeps cost negligible and lets themed rollouts hit within a minute.
+    cacheTtlSeconds: 60,
   };
 }
