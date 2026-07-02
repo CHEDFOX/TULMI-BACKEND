@@ -28,7 +28,12 @@ export const THEME: ThemeTokens = {
     card: "#0b0b0f",
     inputBg: "#0e0e12",
     border: "rgba(255,255,255,0.10)",
-    primary: "#FFFFFF", // white buttons; labels auto-contrast in the app
+    // Was "#FFFFFF" — the app's readableOn() auto-contrast wasn't kicking in on
+    // some builds, so selected chips and primary buttons rendered as white text
+    // on white (invisible). Brand orange is punchy, on-theme, and lands high-
+    // contrast against the black surface regardless of the client's readableOn
+    // implementation. Buttons + selected chips now look like accent pills.
+    primary: "#ff6b1f",
     text: "rgba(255,255,255,0.96)",
     body: "rgba(255,255,255,0.74)",
     muted: "rgba(255,255,255,0.55)",
@@ -272,7 +277,7 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
         { type: "Spacer", style: { height: 56 } }, // HIGH gap
 
         // 3) The user's frequent words (computed by the backend)
-        { type: "Heading", props: { content: `${ctx.name ?? "Your"}'s words` }, style: { fontSize: 22, fontWeight: "800", color: "$color.text", marginBottom: 4 } },
+        { type: "Heading", props: { content: ctx.name ? `${ctx.name}'s words` : "Your words" }, style: { fontSize: 22, fontWeight: "800", color: "$color.text", marginBottom: 4 } },
         { type: "Text", props: { content: "Words you use often", variant: "muted" }, style: { marginBottom: 16 } },
         { type: "WordChips", bind: { value: "frequentWords" } },
       ],
@@ -467,17 +472,31 @@ function settingsScreen(ctx: ScreenContext): ScreenResponse {
       signOut: { kind: "signOut" },
       privacy: { kind: "openUrl", url: "https://tailzu.space/privacy", external: true },
       terms: { kind: "openUrl", url: "https://tailzu.space/terms", external: true },
+      openPersonality: { kind: "switchTab", tabId: "personality" },
+      openDictionary: { kind: "navigate", screenId: "dictionary" },
+      openHistory: { kind: "navigate", screenId: "history" },
+      openStats: { kind: "navigate", screenId: "stats" },
     },
     root: {
       type: "Screen",
       children: [
-        // Title on the right, with a generous gap before the list
-        { type: "Heading", props: { content: "Settings" }, style: { fontSize: 30, fontWeight: "800", color: "$color.text", textAlign: "right", marginBottom: 64 } },
+        // Left-aligned title, tighter gap. The prior right-aligned title with a
+        // 64 px gap made the list appear to be missing when the first rows fell
+        // just below the fold.
+        { type: "Heading", props: { content: "Settings" }, style: { fontSize: 30, fontWeight: "800", color: "$color.text", marginBottom: 20 } },
 
-        // Rows
+        // Personalisation
+        row("Personality", "openPersonality", { props: { label: "Personality", value: "You" } }),
+        row("Dictionary", "openDictionary", { props: { label: "Dictionary" } }),
+        row("History", "openHistory", { props: { label: "History" } }),
+        row("Stats", "openStats", { props: { label: "Stats" } }),
+
+        // Preferences
         row("Language", { kind: "navigate", screenId: "language_select" }, { props: { label: "Language", value: current } }),
-        row("Privacy Policy", "privacy"),
-        row("Terms of Use", "terms"),
+
+        // Legal + account
+        row("Privacy Policy", "privacy", { props: { label: "Privacy Policy" } }),
+        row("Terms of Use", "terms", { props: { label: "Terms of Use" } }),
         row("Sign out", "signOut", { props: { label: "Sign out", chevron: false } }),
         row("Delete account", { kind: "navigate", screenId: "delete_account" }, { props: { label: "Delete account", danger: true, chevron: false } }),
       ],
