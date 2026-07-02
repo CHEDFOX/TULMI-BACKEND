@@ -973,16 +973,21 @@ export function buildKeyboardConfig(): KeyboardConfigResponse {
   return {
     schemaVersion: SDUI_SCHEMA_VERSION,
     theme: {
-      // Colors are HEX ONLY — the native keyboards (Swift + Kotlin) parse
-      // "#RRGGBB", not rgba() / hsl() / theme tokens. Previously we mirrored
-      // the SDUI THEME which uses rgba() for text, so keyText fell back to a
-      // dim default on the extension side and the keys were essentially the
-      // same colour as the background (#0e0e12 vs #000).
+      // Match Apple's iOS 17 dark-mode system keyboard as closely as the
+      // extension can render — same silhouette, same contrast, same tap
+      // feedback — so the Tulmi keyboard reads as "a normal iOS keyboard"
+      // before we layer any brand accents on top. Brand-orange call-to-action
+      // is intentionally NOT set on accent right now; the return / refine
+      // buttons render neutral. Add the accent back in a follow-up commit
+      // once the base UX is proven identical to system.
+      //
+      // Colors are HEX ONLY — the native Swift + Kotlin extensions parse
+      // "#RRGGBB" and fall through to a dim default on rgba() / hsl().
       background: "#000000",
-      key: "#2a2a2e",           // Apple-like medium-dark grey, clearly visible
+      key: "#48484a",           // Apple letter-key grey, dark mode
       keyText: "#FFFFFF",       // solid hex — no rgba, no fallback
-      accent: "#ff6b1f",        // brand orange — return + refine call-to-action
-      keyPressed: "#3a3a40",    // brighter tap-highlight (modern iOS convention)
+      accent: "#48484a",        // neutral (matches keys) — brand touch added later
+      keyPressed: "#6c6c70",    // Apple-like brighter tap-highlight
     },
     layouts: [
       {
