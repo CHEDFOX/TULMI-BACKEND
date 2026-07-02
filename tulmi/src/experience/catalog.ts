@@ -1067,14 +1067,21 @@ function onboardingKeyboard(): ScreenResponse {
     screenId: "onboarding_keyboard",
     title: "",
     template: "scroll",
-    state: { keyboardReady: false }, // the app overwrites this live
+    state: { keyboardReady: false, dictationSample: "" }, // the app overwrites keyboardReady live
     actions: {
+      err: {
+        kind: "toast",
+        tone: "error",
+        message: "Voice failed. Check your connection.",
+      },
       // Prefer openUrl("app-settings:") over openSettings — same underlying
-      // iOS mechanism but a different Linking code path. On some builds where
-      // Linking.openSettings() resolves silently (Tulmi has no per-app iOS
-      // Settings surface yet — no mic/notification permissions granted), the
-      // raw URL scheme still triggers Settings.app to open. Falls through to
-      // an error toast when even the URL open fails, so the user sees WHY.
+      // iOS mechanism but a different Linking code path. Critically, this
+      // action only reliably opens iOS Settings AFTER at least one permission
+      // has been requested (mic/notif/etc.) — before that, iOS has no
+      // per-app Settings surface and the URL resolves silently. The
+      // "Try dictating" step above intentionally fires the mic permission
+      // prompt, so by the time the user reaches this button Tulmi has a
+      // Settings page to route to.
       openSettings: {
         kind: "sequence",
         actions: [
@@ -1120,10 +1127,45 @@ function onboardingKeyboard(): ScreenResponse {
       },
     },
     blocks: [
-      // Full iOS path — Apple does NOT allow deep-linking into Settings >
-      // Keyboards, so the button below can only land the user on the app's
-      // own Settings page. Show every step so they can navigate manually.
+      // STEP 1: Try dictating — this is genuinely a nice preview of the
+      // product AND has a critical side-effect: tapping the mic triggers
+      // iOS's mic-permission prompt. That prompt is what gives Tulmi a
+      // per-app Settings page. Without it, tapping "Open Settings" below
+      // resolves silently on iOS (nothing to route to). So the two-step
+      // "Try voice → then Settings" ordering isn't just onboarding UX —
+      // it's what makes the Settings button actually work.
       { type: "Card", children: [
+        { type: "Heading", props: { content: "Try Tulmi's voice first" }, style: { fontSize: 20, fontWeight: "800", color: "$color.text", marginBottom: 6 } },
+        { type: "Paragraph", props: { content: "Tap the mic and say anything. We'll clean it up in your voice." }, style: { marginBottom: 14 } },
+        {
+          type: "Stack", style: { position: "relative" }, children: [
+            { type: "TextField", bind: { value: "dictationSample" }, props: { placeholder: "Your dictation appears here…", multiline: true }, style: { paddingRight: 56, minHeight: 84 } },
+            { type: "Stack", style: { position: "absolute", right: 12, top: 0, bottom: 0, justify: "center" }, children: [
+              {
+                type: "VoiceToggle",
+                bind: { value: "dictationSample" },
+                props: { targetApp: "Notes", language: "auto", size: 34 },
+                on: { onError: "err" },
+                fallback: {
+                  type: "VoiceButton",
+                  bind: { value: "dictationSample" },
+                  props: { targetApp: "Notes", language: "auto" },
+                  on: { onError: "err" },
+                },
+              },
+            ] },
+          ],
+        },
+      ] },
+
+      { type: "Spacer", style: { height: 20 } },
+
+      // STEP 2: The keyboard-enable card. Apple does NOT allow deep-linking
+      // into Settings > Keyboards, so the button below only lands on Tulmi's
+      // own Settings page (which now exists because mic was requested
+      // above). Show every navigation step so the user knows the path.
+      { type: "Card", children: [
+        { type: "Heading", props: { content: "Now enable the Tulmi keyboard" }, style: { fontSize: 20, fontWeight: "800", color: "$color.text", marginBottom: 10 } },
         step("1", "Open Settings, then tap General."),
         { type: "Spacer", style: { height: 12 } },
         step("2", "Tap Keyboard → Keyboards → Add New Keyboard."),
@@ -1134,7 +1176,7 @@ function onboardingKeyboard(): ScreenResponse {
         { type: "Spacer", style: { height: 12 } },
         step("5", "Return to Tailzu — the 🌐 globe key switches between keyboards."),
       ] },
-      { type: "Spacer", style: { height: 28 } },
+      { type: "Spacer", style: { height: 22 } },
       // "Open Settings" (not "Open Keyboard Settings") — iOS can't deliver
       // what the old label promised; be honest about where the button lands.
       { type: "Button", visibleIf: { not: { truthy: "keyboardReady" } },
