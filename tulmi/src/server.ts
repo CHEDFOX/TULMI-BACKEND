@@ -34,7 +34,13 @@ import {
   resolvePersonality,
   learnVocabularyCorrections,
 } from "./personality/store.js";
-import { buildBootstrap, buildScreen, buildKeyboardConfig } from "./experience/catalog.js";
+import {
+  buildBootstrap,
+  buildScreen,
+  buildKeyboardConfig,
+  bumpCacheVersion,
+  currentCacheVersion,
+} from "./experience/catalog.js";
 import { localize } from "./experience/i18n.js";
 import {
   appendHistoryEntry,
@@ -618,7 +624,17 @@ app.post("/v1/voice/preview", { config: AUTHED_RL }, async (req, reply) => {
 // The app is a generic renderer; these endpoints decide what it draws. Auth is
 // optional here so the shell can boot pre-login (personality is empty for guests).
 
+// Every SDUI response carries no-store headers so intermediaries (nginx,
+// mobile OS URL cache, corporate proxies) never serve a stale catalog.
+// Client-side caching is negotiated through `cacheVersion` in bootstrap.
+function noStoreSdui(reply: import("fastify").FastifyReply): void {
+  reply.header("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  reply.header("Pragma", "no-cache");
+  reply.header("X-Cache-Version", currentCacheVersion());
+}
+
 app.post("/v1/app/bootstrap", { config: UNAUTH_RL }, async (req, reply) => {
+  noStoreSdui(reply);
   // Auth is optional here so the shell can boot; when present, the user's
   // profile decides whether onboarding still needs to run.
   const user = await resolveUser(req.headers["authorization"]);
@@ -628,6 +644,7 @@ app.post("/v1/app/bootstrap", { config: UNAUTH_RL }, async (req, reply) => {
 });
 
 app.post("/v1/app/screen", { config: UNAUTH_RL }, async (req, reply) => {
+  noStoreSdui(reply);
   const body = (req.body ?? {}) as { screenId?: string };
   const screenId = body.screenId;
   if (!screenId) {
@@ -804,6 +821,33 @@ app.delete("/v1/account", { config: AUTHED_RL }, async (req, reply) => {
 
 app.get("/v1/keyboard/config", { config: UNAUTH_RL }, async (_req, reply) => {
   return reply.send(buildKeyboardConfig());
+});
+
+// --- Admin: cache control ----------------------------------------------------
+//
+// A tiny op-tools surface: bump the SDUI cache-version token so every client's
+// next bootstrap reports a new value, which forces them to invalidate any
+// screens they have cached. Guarded by ADMIN_SECRET (set in .env). When the
+// secret isn't set the endpoint refuses every request — no accidental exposure.
+
+app.post("/v1/admin/cache/bump", async (req, reply) => {
+  const provided = req.headers["x-admin-secret"];
+  const expected = cfg.ADMIN_SECRET;
+  if (!expected) {
+    return reply
+      .code(503)
+      .send({ code: "not_configured", message: "ADMIN_SECRET is not set on the server" });
+  }
+  if (typeof provided !== "string" || provided.length === 0 || provided !== expected) {
+    return reply.code(401).send({ code: "unauthorized", message: "Bad or missing admin secret" });
+  }
+  const next = bumpCacheVersion();
+  return reply.send({ ok: true, cacheVersion: next });
+});
+
+app.get("/v1/admin/cache/version", async (_req, reply) => {
+  // Read-only, safe to expose (the token is already sent in every bootstrap).
+  return reply.send({ cacheVersion: currentCacheVersion() });
 });
 
 // --- History + Stats (REST) -------------------------------------------------

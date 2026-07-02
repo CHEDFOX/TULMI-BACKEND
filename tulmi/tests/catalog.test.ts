@@ -10,6 +10,8 @@ import {
   buildBootstrap,
   buildScreen,
   buildKeyboardConfig,
+  bumpCacheVersion,
+  currentCacheVersion,
 } from "../src/experience/catalog.js";
 
 describe("buildBootstrap", () => {
@@ -36,6 +38,21 @@ describe("buildBootstrap", () => {
   it("defaults to non-onboarded when opts is empty", () => {
     const b = buildBootstrap({});
     expect(b.initialScreenId).toBe("onboarding");
+  });
+
+  it("includes a cacheVersion token that matches the current cache version", () => {
+    const b = buildBootstrap({ onboarded: true });
+    expect(typeof b.cacheVersion).toBe("string");
+    expect(b.cacheVersion?.length).toBeGreaterThan(0);
+    expect(b.cacheVersion).toBe(currentCacheVersion());
+  });
+
+  it("bumpCacheVersion changes the token and the next bootstrap reflects it", () => {
+    const before = buildBootstrap({ onboarded: true }).cacheVersion;
+    const bumped = bumpCacheVersion();
+    const after = buildBootstrap({ onboarded: true }).cacheVersion;
+    expect(bumped).not.toBe(before);
+    expect(after).toBe(bumped);
   });
 });
 

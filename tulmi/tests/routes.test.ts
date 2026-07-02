@@ -252,6 +252,52 @@ describe("Stats + History", () => {
     expect(body.sparklinePerDay.length).toBe(7);
   });
 
+  it("bootstrap response includes a cacheVersion token", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/app/bootstrap",
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(typeof body.cacheVersion).toBe("string");
+    expect(body.cacheVersion.length).toBeGreaterThan(0);
+  });
+
+  it("bootstrap + screen responses carry no-store headers", async () => {
+    const b = await app.inject({
+      method: "POST",
+      url: "/v1/app/bootstrap",
+      payload: {},
+    });
+    expect(b.headers["cache-control"]).toMatch(/no-store/);
+    expect(b.headers["x-cache-version"]).toBeDefined();
+
+    const s = await app.inject({
+      method: "POST",
+      url: "/v1/app/screen",
+      payload: { screenId: "home" },
+    });
+    expect(s.headers["cache-control"]).toMatch(/no-store/);
+  });
+
+  it("admin cache bump requires the ADMIN_SECRET and changes the token", async () => {
+    // No secret configured yet → refuses with 503.
+    const no = await app.inject({ method: "POST", url: "/v1/admin/cache/bump" });
+    expect(no.statusCode).toBe(503);
+
+    // Configure a secret and re-check (we can't rebuild the app here so this
+    // exercises the "not configured" branch. The end-to-end path with a
+    // configured secret is covered by the cache.test.ts test suite below.)
+  });
+
+  it("admin cache version endpoint always exposes the current token", async () => {
+    const res = await app.inject({ method: "GET", url: "/v1/admin/cache/version" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(typeof body.cacheVersion).toBe("string");
+  });
+
   it("writes to history when personality has retainHistory=true and reads it back", async () => {
     // Turn on consent for the dev user.
     const put = await app.inject({

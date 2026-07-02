@@ -95,6 +95,11 @@ const EnvSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60_000),
   RATE_LIMIT_UNAUTH_MAX: z.coerce.number().default(20),
 
+  // Admin secret used to authorize server-side operations reachable over HTTP
+  // (currently just the cache-bump endpoint). Optional — when unset, the
+  // admin endpoints refuse every request. Set to a long random string.
+  ADMIN_SECRET: z.string().optional(),
+
   // Input length caps — refuse any request whose text field exceeds this many
   // characters, so a runaway client can't burn LLM budget on huge inputs. 10k
   // chars ≈ 2500 tokens ≈ a healthy 2-minute dictation.

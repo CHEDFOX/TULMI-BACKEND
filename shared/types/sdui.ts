@@ -84,6 +84,13 @@ export interface BootstrapResponse {
   languages?: LanguageOption[];
   /** Seconds the client may cache bootstrap before refetching. */
   cacheTtlSeconds?: number;
+  /**
+   * Opaque cache token. When the server catalog changes (deploy, admin bump),
+   * this string changes; clients compare it to their stored value and drop
+   * every cached screen when it differs. Absent = no cache invalidation
+   * negotiated; the client may cache under existing `cacheTtlSeconds` rules.
+   */
+  cacheVersion?: string;
 }
 
 export interface LanguageOption {
@@ -291,6 +298,7 @@ export type ActionSpec =
   | { kind: "playMedia"; url: string }
   | { kind: "speak"; text: string } // uses /v1/speak under the hood
   | { kind: "signOut" } // clears the Supabase session; app returns to the auth gate
+  | { kind: "clearCache" } // drop any locally cached SDUI screens / bootstrap
   // --- composition ---
   | { kind: "sequence"; actions: ActionRef[] }
   | { kind: "condition"; if: Condition; then: ActionRef; else?: ActionRef };
