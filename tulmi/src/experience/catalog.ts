@@ -1069,7 +1069,19 @@ function onboardingKeyboard(): ScreenResponse {
     template: "scroll",
     state: { keyboardReady: false }, // the app overwrites this live
     actions: {
-      openSettings: { kind: "openSettings", target: "keyboard" },
+      // Prefer openUrl("app-settings:") over openSettings — same underlying
+      // iOS mechanism but a different Linking code path. On some builds where
+      // Linking.openSettings() resolves silently (Tulmi has no per-app iOS
+      // Settings surface yet — no mic/notification permissions granted), the
+      // raw URL scheme still triggers Settings.app to open. Falls through to
+      // an error toast when even the URL open fails, so the user sees WHY.
+      openSettings: {
+        kind: "sequence",
+        actions: [
+          { kind: "openUrl", url: "app-settings:", external: true },
+          { kind: "toast", tone: "info", message: "In Settings: General → Keyboard → Keyboards → Add New → Tailzu" },
+        ],
+      },
       // Split the finish flow so `switchTab` only runs after the PUT succeeds.
       // Previously the write was fire-and-forget: any network blip / 401 / 5xx
       // was swallowed and the user still visually "completed" onboarding,
