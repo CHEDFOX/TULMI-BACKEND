@@ -28,12 +28,13 @@ export const THEME: ThemeTokens = {
     card: "#0b0b0f",
     inputBg: "#0e0e12",
     border: "rgba(255,255,255,0.10)",
-    // Was "#FFFFFF" — the app's readableOn() auto-contrast wasn't kicking in on
-    // some builds, so selected chips and primary buttons rendered as white text
-    // on white (invisible). Brand orange is punchy, on-theme, and lands high-
-    // contrast against the black surface regardless of the client's readableOn
-    // implementation. Buttons + selected chips now look like accent pills.
-    primary: "#ff6b1f",
+    // WHITE — matches the original Plutto-style design (black surface with
+    // white primary CTAs). Client-side readableOn() auto-contrast is expected
+    // to render text as #000 on the pill. If pills render invisible on a
+    // particular build (older readableOn), swap to "#ff6b1f" (brand orange)
+    // as a fallback that lands high-contrast regardless of the client's
+    // auto-contrast implementation.
+    primary: "#FFFFFF",
     text: "rgba(255,255,255,0.96)",
     body: "rgba(255,255,255,0.74)",
     muted: "rgba(255,255,255,0.55)",
