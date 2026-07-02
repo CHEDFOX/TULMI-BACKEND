@@ -253,7 +253,22 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
     type: "Stack", style: { position: "relative" }, children: [
       { type: "TextField", bind: { value: bindKey }, props: { placeholder: "Type here…", multiline: true }, style: { paddingRight: 56, minHeight: 96 } },
       { type: "Stack", style: { position: "absolute", right: 12, top: 0, bottom: 0, justify: "center" }, children: [
-        { type: "VoiceToggle", bind: { value: bindKey }, props: { targetApp: "WhatsApp", language: "auto", size: 38 }, on: { onError: "err" } },
+        {
+          type: "VoiceToggle",
+          bind: { value: bindKey },
+          props: { targetApp: "WhatsApp", language: "auto", size: 38 },
+          on: { onError: "err" },
+          // Older bundles don't have VoiceToggle in their registry. VoiceButton
+          // has shipped since the initial SDUI release, drives the same bind,
+          // and reads state → mic → transcript → writes back. Same product
+          // outcome, one-tap-record instead of press-and-hold.
+          fallback: {
+            type: "VoiceButton",
+            bind: { value: bindKey },
+            props: { targetApp: "WhatsApp", language: "auto" },
+            on: { onError: "err" },
+          },
+        },
       ] },
     ],
   });
@@ -275,39 +290,192 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
       type: "Screen",
       children: [
         // 1) Refine ⇄ Reply swipe (fixed-height pager inside the vertical scroll)
-        { type: "Pager", props: { hint: true, peek: 44, height: 360 }, children: [
-          { type: "Stack", style: { paddingHorizontal: 24, paddingTop: 16 }, children: [
-            { type: "Heading", props: { content: "Make it sound like you" }, style: titleStyle },
-            boxWithVoice("input"),
-            { type: "Spacer", style: { height: 22 } },
-            { type: "Stack", style: { align: "center" }, children: [
-              { type: "RefineButton", bind: { value: "input" }, props: { targetApp: "WhatsApp", language: "auto", width: 160 }, on: { onError: "err" } },
+        // Pager is a modern (post-v1) component. Old bundles get the same two
+        // panes stacked vertically via fallback — no swipe, but every screen
+        // element remains reachable.
+        {
+          type: "Pager",
+          props: { hint: true, peek: 44, height: 360 },
+          children: [
+            { type: "Stack", style: { paddingHorizontal: 24, paddingTop: 16 }, children: [
+              { type: "Heading", props: { content: "Make it sound like you" }, style: titleStyle },
+              boxWithVoice("input"),
+              { type: "Spacer", style: { height: 22 } },
+              { type: "Stack", style: { align: "center" }, children: [
+                {
+                  type: "RefineButton",
+                  bind: { value: "input" },
+                  props: { targetApp: "WhatsApp", language: "auto", width: 160 },
+                  on: { onError: "err" },
+                  // Old-bundle fallback: plain Button that fires /v1/refine
+                  // via the callEndpoint action (present since v1 CORE_ACTIONS).
+                  // Result is written back into `input` so the user still sees
+                  // the cleaned text where they typed.
+                  fallback: {
+                    type: "Button",
+                    props: { label: "Refine", variant: "primary" },
+                    on: { onPress: {
+                      kind: "callEndpoint",
+                      method: "POST",
+                      path: "/v1/refine",
+                      body: { text: "$state.input", targetApp: "WhatsApp", language: "auto" },
+                      assignTo: "input",
+                      onError: "err",
+                    } },
+                  },
+                },
+              ] },
             ] },
-          ] },
-          { type: "Stack", style: { paddingHorizontal: 24, paddingTop: 16 }, children: [
-            { type: "Heading", props: { content: "Reply in your voice" }, style: titleStyle },
-            { type: "TextField", bind: { value: "screenContent" }, props: { placeholder: "Paste their message…", multiline: true }, style: { minHeight: 70 } },
-            { type: "Spacer", style: { height: 14 } },
-            boxWithVoice("intent"),
-            { type: "Spacer", style: { height: 18 } },
-            { type: "Stack", style: { align: "center" }, children: [
-              { type: "DraftButton", bind: { value: "intent" }, props: { messageKey: "screenContent", resultKey: "result", width: 160 }, on: { onError: "err" } },
+            { type: "Stack", style: { paddingHorizontal: 24, paddingTop: 16 }, children: [
+              { type: "Heading", props: { content: "Reply in your voice" }, style: titleStyle },
+              { type: "TextField", bind: { value: "screenContent" }, props: { placeholder: "Paste their message…", multiline: true }, style: { minHeight: 70 } },
+              { type: "Spacer", style: { height: 14 } },
+              boxWithVoice("intent"),
+              { type: "Spacer", style: { height: 18 } },
+              { type: "Stack", style: { align: "center" }, children: [
+                {
+                  type: "DraftButton",
+                  bind: { value: "intent" },
+                  props: { messageKey: "screenContent", resultKey: "result", width: 160 },
+                  on: { onError: "err" },
+                  // Old-bundle fallback: plain Button that fires /v1/draft.
+                  fallback: {
+                    type: "Button",
+                    props: { label: "Draft reply", variant: "primary" },
+                    on: { onPress: {
+                      kind: "callEndpoint",
+                      method: "POST",
+                      path: "/v1/draft",
+                      body: {
+                        intent: "$state.intent",
+                        screenContent: "$state.screenContent",
+                        targetApp: "WhatsApp",
+                        language: "auto",
+                      },
+                      assignTo: "result",
+                      onError: "err",
+                    } },
+                  },
+                },
+              ] },
             ] },
-          ] },
-        ] },
+          ],
+          // Pager fallback: same two children in a vertical Stack. Old bundles
+          // scroll through them instead of swiping. Product usable.
+          fallback: {
+            type: "Stack",
+            style: { direction: "column" },
+            children: [
+              { type: "Stack", style: { paddingHorizontal: 24, paddingTop: 16 }, children: [
+                { type: "Heading", props: { content: "Make it sound like you" }, style: titleStyle },
+                boxWithVoice("input"),
+                { type: "Spacer", style: { height: 22 } },
+                { type: "Stack", style: { align: "center" }, children: [
+                  {
+                    type: "Button",
+                    props: { label: "Refine", variant: "primary" },
+                    on: { onPress: {
+                      kind: "callEndpoint",
+                      method: "POST",
+                      path: "/v1/refine",
+                      body: { text: "$state.input", targetApp: "WhatsApp", language: "auto" },
+                      assignTo: "input",
+                      onError: "err",
+                    } },
+                  },
+                ] },
+              ] },
+              { type: "Spacer", style: { height: 32 } },
+              { type: "Stack", style: { paddingHorizontal: 24 }, children: [
+                { type: "Heading", props: { content: "Reply in your voice" }, style: titleStyle },
+                { type: "TextField", bind: { value: "screenContent" }, props: { placeholder: "Paste their message…", multiline: true }, style: { minHeight: 70 } },
+                { type: "Spacer", style: { height: 14 } },
+                boxWithVoice("intent"),
+                { type: "Spacer", style: { height: 18 } },
+                { type: "Stack", style: { align: "center" }, children: [
+                  {
+                    type: "Button",
+                    props: { label: "Draft reply", variant: "primary" },
+                    on: { onPress: {
+                      kind: "callEndpoint",
+                      method: "POST",
+                      path: "/v1/draft",
+                      body: {
+                        intent: "$state.intent",
+                        screenContent: "$state.screenContent",
+                        targetApp: "WhatsApp",
+                        language: "auto",
+                      },
+                      assignTo: "result",
+                      onError: "err",
+                    } },
+                  },
+                ] },
+              ] },
+            ],
+          },
+        },
 
         { type: "Spacer", style: { height: 56 } }, // HIGH gap between sections
 
         // 2) Dictionary (tappable header → full page)
-        { type: "Row", props: { label: "Dictionary" }, on: { onPress: "openDictionary" }, style: { borderBottomWidth: 0, paddingVertical: 4, marginBottom: 10 } },
-        { type: "DictionaryEditor", bind: { value: "dictionary" }, props: { rows: 2 }, on: { onError: "err" } },
+        {
+          type: "Row",
+          props: { label: "Dictionary" },
+          on: { onPress: "openDictionary" },
+          style: { borderBottomWidth: 0, paddingVertical: 4, marginBottom: 10 },
+          // Fallback: a Button labelled Dictionary (visible + tappable on old
+          // bundles). Same navigate action fires.
+          fallback: {
+            type: "Button",
+            props: { label: "Dictionary", variant: "secondary" },
+            on: { onPress: "openDictionary" },
+            style: { marginBottom: 10 },
+          },
+        },
+        {
+          type: "DictionaryEditor",
+          bind: { value: "dictionary" },
+          props: { rows: 2 },
+          on: { onError: "err" },
+          // Old-bundle fallback: point them to the full-page editor via the
+          // Dictionary row above. Cannot inline-edit without the component.
+          fallback: {
+            type: "Text",
+            props: { content: "Tap Dictionary above to edit your saved words.", variant: "muted" },
+            style: { paddingHorizontal: 24 },
+          },
+        },
 
         { type: "Spacer", style: { height: 56 } }, // HIGH gap
 
         // 3) The user's frequent words (computed by the backend)
         { type: "Heading", props: { content: ctx.name ? `${ctx.name}'s words` : "Your words" }, style: { fontSize: 22, fontWeight: "800", color: "$color.text", marginBottom: 4 } },
         { type: "Text", props: { content: "Words you use often", variant: "muted" }, style: { marginBottom: 16 } },
-        { type: "WordChips", bind: { value: "frequentWords" } },
+        {
+          type: "WordChips",
+          bind: { value: "frequentWords" },
+          // Old-bundle fallback: pre-join the words server-side into a plain
+          // Text — same info, no chip layout. Empty list falls through to
+          // "You haven't dictated much yet." for a friendlier empty state.
+          fallback: (ctx.frequentWords ?? []).length > 0
+            ? {
+                type: "Text",
+                props: {
+                  content: (ctx.frequentWords ?? []).join(" · "),
+                  variant: "muted",
+                },
+                style: { paddingHorizontal: 4 },
+              }
+            : {
+                type: "Text",
+                props: {
+                  content: "You haven't dictated much yet.",
+                  variant: "muted",
+                },
+                style: { paddingHorizontal: 4 },
+              },
+        },
       ],
     },
     cacheTtlSeconds: 0,
@@ -487,9 +655,29 @@ function replyScreen(): ScreenResponse {
 /** Settings — server-driven app info, account, language, and links. */
 function settingsScreen(ctx: ScreenContext): ScreenResponse {
   const current = LANGUAGES.find((l) => l.value === ctx.language)?.label ?? "Auto";
-  const row = (label: string, action: ActionRef, extra: Partial<Node> = {}): Node => ({
-    type: "Row", props: { label }, on: { onPress: action }, ...extra,
-  });
+  // Row helper attaches a Button fallback so old TestFlight bundles (which
+  // don't know the "Row" node type) still render each Settings item as a
+  // tappable button. Without the fallback the entire Settings body renders
+  // as null on old bundles — that was the "empty Settings" bug in the field.
+  const row = (label: string, action: ActionRef, extra: Partial<Node> = {}): Node => {
+    const extraProps = (extra.props as Record<string, unknown> | undefined) ?? {};
+    const danger = extraProps.danger === true;
+    return {
+      type: "Row",
+      props: { label },
+      on: { onPress: action },
+      ...extra,
+      fallback: {
+        type: "Button",
+        props: {
+          label,
+          variant: danger ? "danger" : "secondary",
+        },
+        on: { onPress: action },
+        style: { marginBottom: 8 },
+      },
+    };
+  };
 
   return {
     schemaVersion: SDUI_SCHEMA_VERSION,
