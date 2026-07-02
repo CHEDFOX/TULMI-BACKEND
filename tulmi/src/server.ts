@@ -14,7 +14,7 @@
  * resolved here on the backend (the app just sends the inputs).
  */
 import { createHash } from "node:crypto";
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
@@ -66,6 +66,13 @@ import type {
 } from "../../shared/types/api.js";
 import { WS_PATH } from "../../shared/types/api.js";
 
+/**
+ * Build (but do NOT listen on) a fully-configured Fastify instance.
+ *
+ * Extracted so tests can `app.inject()` in-process without binding a port and
+ * so the boot block below stays a single top-level try/catch.
+ */
+export async function buildApp(): Promise<FastifyInstance> {
 const cfg = getConfig();
 
 // Sentry — opt-in via SENTRY_DSN. Awaited so error hooks are registered
@@ -1043,11 +1050,20 @@ app.register(async (instance) => {
   });
 });
 
+  return app;
+}
+
 // --- Boot -------------------------------------------------------------------
 
-try {
-  await app.listen({ port: cfg.PORT, host: cfg.HOST });
-} catch (err) {
-  app.log.error(err);
-  process.exit(1);
+// Only bind a port when this module is the process entry point. Tests import
+// buildApp() directly and drive the server in-process via app.inject().
+if (process.env.NODE_ENV !== "test") {
+  const cfg = getConfig();
+  try {
+    const app = await buildApp();
+    await app.listen({ port: cfg.PORT, host: cfg.HOST });
+  } catch (err) {
+    console.error(err);
+    process.exit(1);
+  }
 }
