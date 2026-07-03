@@ -303,6 +303,10 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
     },
     root: {
       type: "Screen",
+      // Zero the Screen's default horizontal padding so the Pager renders
+      // edge-to-edge (no black side strips). Non-pager sections wrap in a
+      // padded inner Stack below.
+      style: { paddingHorizontal: 0 },
       children: [
         // 1) Refine ⇄ Reply swipe (fixed-height pager inside the vertical scroll)
         // Pager is a modern (post-v1) component. Old bundles get the same two
@@ -431,65 +435,73 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
           },
         },
 
-        { type: "Spacer", style: { height: 56 } }, // HIGH gap between sections
-
-        // 2) Dictionary (tappable header → full page)
+        // Everything below the Pager sits inside a padded Stack so it keeps
+        // the standard 24px side margin (the Screen wrapper's padding is off
+        // to let the Pager span edge-to-edge).
         {
-          type: "Row",
-          props: { label: "Dictionary" },
-          on: { onPress: "openDictionary" },
-          style: { borderBottomWidth: 0, paddingVertical: 4, marginBottom: 10 },
-          // Fallback: a Button labelled Dictionary (visible + tappable on old
-          // bundles). Same navigate action fires.
-          fallback: {
-            type: "Button",
-            props: { label: "Dictionary", variant: "secondary" },
-            on: { onPress: "openDictionary" },
-            style: { marginBottom: 10 },
-          },
-        },
-        {
-          type: "DictionaryEditor",
-          bind: { value: "dictionary" },
-          props: { rows: 2 },
-          on: { onError: "err" },
-          // Old-bundle fallback: point them to the full-page editor via the
-          // Dictionary row above. Cannot inline-edit without the component.
-          fallback: {
-            type: "Text",
-            props: { content: "Tap Dictionary above to edit your saved words.", variant: "muted" },
-            style: { paddingHorizontal: 24 },
-          },
-        },
+          type: "Stack",
+          style: { paddingHorizontal: 24 },
+          children: [
+            { type: "Spacer", style: { height: 56 } }, // HIGH gap between sections
 
-        { type: "Spacer", style: { height: 56 } }, // HIGH gap
-
-        // 3) The user's frequent words (computed by the backend)
-        { type: "Heading", props: { content: ctx.name ? `${ctx.name}'s words` : "Your words" }, style: { fontSize: 22, fontWeight: "800", color: "$color.text", marginBottom: 4 } },
-        { type: "Text", props: { content: "Words you use often", variant: "muted" }, style: { marginBottom: 16 } },
-        {
-          type: "WordChips",
-          bind: { value: "frequentWords" },
-          // Old-bundle fallback: pre-join the words server-side into a plain
-          // Text — same info, no chip layout. Empty list falls through to
-          // "You haven't dictated much yet." for a friendlier empty state.
-          fallback: (ctx.frequentWords ?? []).length > 0
-            ? {
-                type: "Text",
-                props: {
-                  content: (ctx.frequentWords ?? []).join(" · "),
-                  variant: "muted",
-                },
-                style: { paddingHorizontal: 4 },
-              }
-            : {
-                type: "Text",
-                props: {
-                  content: "You haven't dictated much yet.",
-                  variant: "muted",
-                },
-                style: { paddingHorizontal: 4 },
+            // 2) Dictionary (tappable header → full page)
+            {
+              type: "Row",
+              props: { label: "Dictionary" },
+              on: { onPress: "openDictionary" },
+              style: { borderBottomWidth: 0, paddingVertical: 4, marginBottom: 10 },
+              // Fallback: a Button labelled Dictionary (visible + tappable on old
+              // bundles). Same navigate action fires.
+              fallback: {
+                type: "Button",
+                props: { label: "Dictionary", variant: "secondary" },
+                on: { onPress: "openDictionary" },
+                style: { marginBottom: 10 },
               },
+            },
+            {
+              type: "DictionaryEditor",
+              bind: { value: "dictionary" },
+              props: { rows: 2 },
+              on: { onError: "err" },
+              // Old-bundle fallback: point them to the full-page editor via the
+              // Dictionary row above. Cannot inline-edit without the component.
+              fallback: {
+                type: "Text",
+                props: { content: "Tap Dictionary above to edit your saved words.", variant: "muted" },
+              },
+            },
+
+            { type: "Spacer", style: { height: 56 } }, // HIGH gap
+
+            // 3) The user's frequent words (computed by the backend)
+            { type: "Heading", props: { content: ctx.name ? `${ctx.name}'s words` : "Your words" }, style: { fontSize: 22, fontWeight: "800", color: "$color.text", marginBottom: 4 } },
+            { type: "Text", props: { content: "Words you use often", variant: "muted" }, style: { marginBottom: 16 } },
+            {
+              type: "WordChips",
+              bind: { value: "frequentWords" },
+              // Old-bundle fallback: pre-join the words server-side into a plain
+              // Text — same info, no chip layout. Empty list falls through to
+              // "You haven't dictated much yet." for a friendlier empty state.
+              fallback: (ctx.frequentWords ?? []).length > 0
+                ? {
+                    type: "Text",
+                    props: {
+                      content: (ctx.frequentWords ?? []).join(" · "),
+                      variant: "muted",
+                    },
+                    style: { paddingHorizontal: 4 },
+                  }
+                : {
+                    type: "Text",
+                    props: {
+                      content: "You haven't dictated much yet.",
+                      variant: "muted",
+                    },
+                    style: { paddingHorizontal: 4 },
+                  },
+            },
+          ],
         },
       ],
     },
