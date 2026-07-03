@@ -248,7 +248,21 @@ const LANGUAGES: Array<{ value: string; label: string }> = [
 
 /** The refine playground — proves the full SDUI loop incl. a brain call. */
 function homeScreen(ctx: ScreenContext): ScreenResponse {
-  const titleStyle = { fontSize: 30, fontWeight: "800" as const, color: "$color.text", marginBottom: 24 };
+  // fontSize 30 overflowed the Pager page width (peek:44 leaves ~screen-88 usable),
+  // so long titles ("Reply in your voice") got clipped mid-word. 24 lets both
+  // titles wrap to at most two lines; flexShrink lets them break cleanly.
+  const titleStyle = {
+    fontSize: 24,
+    fontWeight: "800" as const,
+    color: "$color.text",
+    marginBottom: 20,
+    flexShrink: 1,
+    flexWrap: "wrap" as const,
+  };
+  // Pinning each page Stack to width:100% keeps titles measuring against the
+  // page viewport, not the scroll content width — otherwise "Reply in your
+  // voice" renders on one line and overflows past the right edge.
+  const pageStyle = { paddingHorizontal: 24, paddingTop: 16, width: "100%" as const };
 
   const boxWithVoice = (bindKey: string): Node => ({
     type: "Stack", style: { position: "relative" }, children: [
@@ -298,8 +312,8 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
           type: "Pager",
           props: { hint: true, peek: 44, height: 360 },
           children: [
-            { type: "Stack", style: { paddingHorizontal: 24, paddingTop: 16 }, children: [
-              { type: "Heading", props: { content: "Make it sound like you" }, style: titleStyle },
+            { type: "Stack", style: pageStyle, children: [
+              { type: "Heading", props: { content: "Make it sound like you", numberOfLines: 2 }, style: titleStyle },
               boxWithVoice("input"),
               { type: "Spacer", style: { height: 22 } },
               { type: "Stack", style: { align: "center" }, children: [
@@ -327,8 +341,8 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
                 },
               ] },
             ] },
-            { type: "Stack", style: { paddingHorizontal: 24, paddingTop: 16 }, children: [
-              { type: "Heading", props: { content: "Reply in your voice" }, style: titleStyle },
+            { type: "Stack", style: pageStyle, children: [
+              { type: "Heading", props: { content: "Reply in your voice", numberOfLines: 2 }, style: titleStyle },
               { type: "TextField", bind: { value: "screenContent" }, props: { placeholder: "Paste their message…", multiline: true }, style: { minHeight: 70 } },
               { type: "Spacer", style: { height: 14 } },
               boxWithVoice("intent"),
@@ -367,8 +381,8 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
             type: "Stack",
             style: { direction: "column" },
             children: [
-              { type: "Stack", style: { paddingHorizontal: 24, paddingTop: 16 }, children: [
-                { type: "Heading", props: { content: "Make it sound like you" }, style: titleStyle },
+              { type: "Stack", style: pageStyle, children: [
+                { type: "Heading", props: { content: "Make it sound like you", numberOfLines: 2 }, style: titleStyle },
                 boxWithVoice("input"),
                 { type: "Spacer", style: { height: 22 } },
                 { type: "Stack", style: { align: "center" }, children: [
@@ -388,7 +402,7 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
               ] },
               { type: "Spacer", style: { height: 32 } },
               { type: "Stack", style: { paddingHorizontal: 24 }, children: [
-                { type: "Heading", props: { content: "Reply in your voice" }, style: titleStyle },
+                { type: "Heading", props: { content: "Reply in your voice", numberOfLines: 2 }, style: titleStyle },
                 { type: "TextField", bind: { value: "screenContent" }, props: { placeholder: "Paste their message…", multiline: true }, style: { minHeight: 70 } },
                 { type: "Spacer", style: { height: 14 } },
                 boxWithVoice("intent"),
