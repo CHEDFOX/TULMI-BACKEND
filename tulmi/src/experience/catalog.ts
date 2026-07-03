@@ -333,12 +333,17 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
                   fallback: {
                     type: "Button",
                     props: { label: "Refine", variant: "primary" },
+                    // /v1/refine responds with { refinedText, usage } — assignTo
+                    // would drop the whole object into state.input. Two-step:
+                    // land the response in a private key, then setState pulls
+                    // out refinedText via dot-path resolution.
                     on: { onPress: {
                       kind: "callEndpoint",
                       method: "POST",
                       path: "/v1/refine",
                       body: { text: "$state.input", targetApp: "WhatsApp", language: "auto" },
-                      assignTo: "input",
+                      assignTo: "_refined",
+                      onSuccess: { kind: "setState", path: "input", value: "$state._refined.refinedText" },
                       onError: "err",
                     } },
                   },
@@ -361,6 +366,8 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
                   fallback: {
                     type: "Button",
                     props: { label: "Draft reply", variant: "primary" },
+                    // /v1/draft responds with { draftText, usage } — same
+                    // pattern as Refine: land, then setState pulls draftText.
                     on: { onPress: {
                       kind: "callEndpoint",
                       method: "POST",
@@ -371,7 +378,8 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
                         targetApp: "WhatsApp",
                         language: "auto",
                       },
-                      assignTo: "result",
+                      assignTo: "_drafted",
+                      onSuccess: { kind: "setState", path: "result", value: "$state._drafted.draftText" },
                       onError: "err",
                     } },
                   },
@@ -398,7 +406,8 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
                       method: "POST",
                       path: "/v1/refine",
                       body: { text: "$state.input", targetApp: "WhatsApp", language: "auto" },
-                      assignTo: "input",
+                      assignTo: "_refined",
+                      onSuccess: { kind: "setState", path: "input", value: "$state._refined.refinedText" },
                       onError: "err",
                     } },
                   },
@@ -425,7 +434,8 @@ function homeScreen(ctx: ScreenContext): ScreenResponse {
                         targetApp: "WhatsApp",
                         language: "auto",
                       },
-                      assignTo: "result",
+                      assignTo: "_drafted",
+                      onSuccess: { kind: "setState", path: "result", value: "$state._drafted.draftText" },
                       onError: "err",
                     } },
                   },
